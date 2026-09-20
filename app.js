@@ -664,7 +664,7 @@ function refreshTiles() {
         const link = location.origin + location.pathname + '#' + state.self_npub;
         empty.innerHTML = `<div class="box">
             <h3>No one else is here yet</h3>
-            <p class="muted">Click <strong>Join</strong> to turn on your camera, then share this link or your ID with anyone. Anyone who has the ID of <em>anyone in the room</em> can join — no setup on your side.</p>
+            <p class="muted">Click <strong>Join</strong> to turn on your camera, then share this link or your ID with anyone. Anyone who has the ID of <em>anyone in the room</em> can join.</p>
             <code>${escapeHtml(link)}</code>
             <p class="muted small">Your ID: ${escapeHtml(state.self_npub)}</p>
         </div>`;
@@ -1403,14 +1403,31 @@ function buildUI() {
         });
     });
     const sidebarEl = document.getElementById('sidebar');
+    const backdropEl = document.getElementById('sidebar-backdrop');
     const mobileMq = window.matchMedia('(max-width: 860px)');
+    const syncBackdrop = () => {
+        backdropEl.hidden = !(mobileMq.matches && !sidebarEl.classList.contains('collapsed'));
+    };
     // Desktop starts with the panel open; mobile starts with it hidden.
-    const applySidebarDefault = () => sidebarEl.classList.toggle('collapsed', mobileMq.matches);
+    const applySidebarDefault = () => {
+        sidebarEl.classList.toggle('collapsed', mobileMq.matches);
+        syncBackdrop();
+    };
     applySidebarDefault();
     mobileMq.addEventListener?.('change', applySidebarDefault);
     document.getElementById('sidebar-toggle').addEventListener('click', () => {
         sidebarEl.classList.toggle('collapsed');
+        syncBackdrop();
     });
+    backdropEl.addEventListener('click', () => {
+        sidebarEl.classList.add('collapsed');
+        syncBackdrop();
+    });
+
+    // Screen share needs getDisplayMedia (Android Chrome yes, iOS no).
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+        document.getElementById('screen-btn').hidden = true;
+    }
 
     document.getElementById('copy-invite').addEventListener('click', async () => {
         const link = location.origin + location.pathname + '#' + state.self_npub;
@@ -1470,6 +1487,15 @@ function buildUI() {
 }
 
 document.addEventListener('DOMContentLoaded', () => { setupLogin(); checkMultiTab(); });
+
+// Installable PWA: cache the app shell so it opens offline. Only meaningful
+// on a secure origin (https or localhost).
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(() => { /* offline support is optional */ });
+    });
+}
+
 window.__state = state;
 window.__media = media;
 window.__store = store;

@@ -124,12 +124,30 @@ its own random identity.
 - There is no room password beyond the unguessable random npub: anyone who
   learns a member's npub can join. Don't share it publicly.
 
+## Mobile & PWA
+
+RooKoo is installable (web app manifest + service worker): on Android Chrome
+use "Install app" / "Add to Home screen", on iOS Safari use Share → Add to Home
+Screen. It then launches fullscreen and the shell loads even while offline.
+
+On phones the sidebar slides in below the header with a tap-to-close backdrop,
+the status indicator collapses to a coloured dot, controls wrap to fit, and
+layout respects notches / the home indicator via safe-area insets. The viewport
+uses `dvh` and `interactive-widget=resizes-content`, so the on-screen keyboard
+resizes the chat instead of causing layout jank.
+
+Video is always letterboxed (`object-fit: contain`), never stretched or cropped,
+so a non-16:9 camera shows black bars rather than a distorted picture. Screen
+sharing uses `getDisplayMedia` and works in the installed Android PWA; the
+button is hidden on platforms that don't support it (e.g. iOS).
+
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `index.html`, `style.css`, `app.js` | The application |
-| `icon.png` | App icon / favicon (from the Pidge project) |
+| `manifest.webmanifest`, `sw.js` | PWA manifest and offline service worker |
+| `icon.png`, `icon-192.png`, `icon-512.png` | App icon / favicon (from the Pidge project) |
 | `nostr-p2p.js` | The vendored NostrP2P library (signaling + data-channel mesh) |
 | `nostr-deps.js` | Vendored `@noble`/nostr-tools dependencies |
 | `store.js` | IndexedDB replica store for shared files |
