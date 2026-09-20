@@ -492,6 +492,7 @@ function startApp(sk) {
             renderPeople();
             hydrateAvatars();
             updatePeerStatus();
+            tuneVideoTrack();
         },
         onMessage: (npub, msg) => { handleMessage(npub, msg).catch(console.error); },
         onDisconnect: (npub) => {
@@ -502,6 +503,7 @@ function startApp(sk) {
             }
             renderPeople();
             updatePeerStatus();
+            tuneVideoTrack();
         },
     });
     state.self_npub = state.p2p.npub;
@@ -872,10 +874,49 @@ function iceServers() {
     return ice;
 }
 
+// The long edge of the video we aim for, scaled down as the mesh grows so a
+// mesh call doesn't choke on bandwidth/CPU. 1–2 peers: 720p, 3–5: ~540p, 6+.
+function desiredLongSide() {
+    const peers = state.p2p ? state.p2p.connections.size : 0;
+    if (peers <= 2) return 1280;
+    if (peers <= 5) return 960;
+    return 640;
+}
+
+// Ask the camera for the best resolution/frame rate it supports, preserving its
+// native aspect (so a portrait phone stays portrait), capped to the current
+// target. Re-applied as the number of peers changes.
+function tuneVideoTrack(force = false) {
+    const track = media.rawStream?.getVideoTracks?.()[0];
+    if (!track || typeof track.applyConstraints !== 'function') return;
+    const target = desiredLongSide();
+    if (!force && media._capTarget === target) return;
+    try {
+        const s = track.getSettings?.() || {};
+        const c = track.getCapabilities?.() || {};
+        const w = s.width || 1280;
+        const h = s.height || 720;
+        const long = Math.max(w, h) || 1280;
+        const scale = target / long;
+        let tw = Math.max(2, Math.round((w * scale) / 2) * 2);
+        let th = Math.max(2, Math.round((h * scale) / 2) * 2);
+        if (c.width?.max) tw = Math.min(tw, c.width.max);
+        if (c.height?.max) th = Math.min(th, c.height.max);
+        const maxFr = c.frameRate?.max || 30;
+        const fr = Math.min(30, maxFr);
+        media._capTarget = target;
+        track.applyConstraints({ width: { ideal: tw }, height: { ideal: th }, frameRate: { ideal: fr, max: 30 } })
+            .catch(() => {});
+    } catch { /* keep whatever the camera gave us */ }
+}
+
 async function startMedia() {
     try {
+        // No width/height here: forcing 16:9 makes portrait phone cameras
+        // deliver a squashed/rotated frame. Start native, then tuneVideoTrack()
+        // picks the best resolution preserving orientation.
         media.rawStream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+            video: { facingMode: 'user', frameRate: { ideal: 30 } },
             audio: { echoCancellation: true, noiseSuppression: true },
         });
     } catch (e) {
@@ -897,6 +938,7 @@ async function startMedia() {
     const hasVideo = media.rawStream.getVideoTracks().length > 0;
     media.micOn = media.rawStream.getAudioTracks().length > 0;
     media.camOn = hasVideo;
+    if (hasVideo) tuneVideoTrack(true);
 
     if (hasVideo) {
         // Canvas pipeline: source camera -> effects canvas -> outgoing track.
@@ -906,22 +948,19 @@ async function startMedia() {
         v.srcObject = media.rawStream;
         await v.play().catch(() => {});
         media.sourceVideo = v;
+        if (!v.videoWidth) {
+            await new Promise(res => v.addEventListener('loadedmetadata', res, { once: true }));
+        }
 
         media.canvas = document.createElement('canvas');
-        media.canvas.width = 1280;
-        media.canvas.height = 720;
         media.ctx = media.canvas.getContext('2d', { alpha: false });
 
         // Downscaled buffer used to pixelate the background.
         media.pixelCanvas = document.createElement('canvas');
-        media.pixelCanvas.width = 80;
-        media.pixelCanvas.height = 45;
         media.pixelCtx = media.pixelCanvas.getContext('2d');
 
         // Foreground layer: camera frame masked to the person silhouette.
         media.personCanvas = document.createElement('canvas');
-        media.personCanvas.width = media.canvas.width;
-        media.personCanvas.height = media.canvas.height;
         media.personCtx = media.personCanvas.getContext('2d');
 
         // Low-res segmentation mask (filled in as MediaPipe produces masks).
@@ -933,6 +972,12 @@ async function startMedia() {
         media.maskReady = false;
         media.lastMaskAt = 0;
 
+        // Match the camera's real resolution/orientation (a phone camera is
+        // portrait) so the outgoing video is never squashed into 16:9.
+        sizePipeline();
+        // Re-fit when the camera reports a new size (device rotation, etc).
+        v.addEventListener('resize', () => { sizePipeline(); refreshTiles(); });
+
         const captured = media.canvas.captureStream(30);
         media.outVideoTrack = captured.getVideoTracks()[0];
         media.outStream = new MediaStream([media.outVideoTrack, ...media.rawStream.getAudioTracks()]);
@@ -940,6 +985,25 @@ async function startMedia() {
     } else {
         media.outStream = new MediaStream([...media.rawStream.getAudioTracks()]);
     }
+}
+
+// Size the effects canvases to the camera's aspect ratio (long side capped at
+// 1280) so portrait phones stay portrait end-to-end.
+function sizePipeline() {
+    const v = media.sourceVideo;
+    if (!v || !media.canvas) return;
+    const vw = v.videoWidth || 1280;
+    const vh = v.videoHeight || 720;
+    const scale = Math.min(1, 1280 / Math.max(vw, vh));
+    const cw = Math.max(2, Math.round((vw * scale) / 2) * 2);
+    const ch = Math.max(2, Math.round((vh * scale) / 2) * 2);
+    if (media.canvas.width === cw && media.canvas.height === ch) return;
+    media.canvas.width = cw;
+    media.canvas.height = ch;
+    media.personCanvas.width = cw;
+    media.personCanvas.height = ch;
+    media.pixelCanvas.width = Math.max(2, Math.round(cw / 16));
+    media.pixelCanvas.height = Math.max(2, Math.round(ch / 16));
 }
 
 // ---------------------------------------------------- background effects ---
@@ -1084,6 +1148,8 @@ function drawWithMask(video, w, h) {
 
 function drawLoop() {
     if (!media.ctx) return;
+    // Keep the pipeline matched to the camera's current size/orientation.
+    if (!media.screenStream) sizePipeline();
     const { ctx, sourceVideo, canvas } = media;
     const w = canvas.width, h = canvas.height;
     // Screen share bypasses this canvas entirely; skip the work.
