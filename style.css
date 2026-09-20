@@ -173,8 +173,12 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
     background: var(--color-link);
     overflow: hidden;
 }
-/* Profile picture covers the initials badge when one is set. */
-.avatar img, .person .av img { width: 100%; height: 100%; object-fit: cover; display: none; }
+/* Profile picture covers the initials badge when one is set. Absolutely
+   positioned so the image can never grow the box (including non-square pics). */
+.avatar img, .person .av img {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%; object-fit: cover; display: none;
+}
 .avatar.has-img img, .person .av.has-img img { display: block; }
 .avatar.has-img .initials, .person .av.has-img .initials { display: none; }
 .tile.has-video .avatar { display: none; }
@@ -235,6 +239,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .person { display: flex; align-items: center; gap: 8px; background: var(--color-background); border: 1px solid var(--line); padding: 6px; }
 .person .av {
     width: 34px; height: 34px; flex: none;
+    position: relative; overflow: hidden;
     background: var(--color-link); color: #fff;
     display: grid; place-items: center; font-weight: 700;
 }
