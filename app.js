@@ -245,6 +245,8 @@ async function handleMessage(npub, msg) {
             registerFile(msg.file, from);
             addChat({ type: 'file', mid: msg.mid, sender: from, file: msg.file, at: msg.at || Date.now() });
             renderChat();
+            // Images are shown inline in the chat, so fetch them automatically.
+            if (String(msg.file?.type || '').startsWith('image/')) requestBlob(msg.file.hash);
             break;
         case 'file_req':
             await serveFile(msg.hash, from);
@@ -376,12 +378,13 @@ async function fileURL(hash) {
     }
     return null;
 }
-// Fetch a blob (e.g. someone's avatar) without triggering a download.
+// Fetch a blob (e.g. an avatar or inline image) without triggering a download.
 async function requestBlob(hash) {
     if (!hash || objectURLs[hash] || incoming[hash]) return;
     const f = await store.getFile(hash);
-    if (f && f.blob) { hydrateAvatars(); return; }
-    incoming[hash] = { chunks: [], got: 0, total: 0, name: 'avatar', size: 0, from: null, silent: true };
+    if (f && f.blob) { objectURLs[hash] = URL.createObjectURL(f.blob); hydrateAvatars(); renderChat(); return; }
+    const meta = fileMeta[hash] || {};
+    incoming[hash] = { chunks: [], got: 0, total: 0, name: meta.name || 'file', size: meta.size || 0, type: meta.type || '', from: null, silent: true };
     gossip({ type: 'file_req', hash, ttl: 8 });
 }
 // Paint any avatar for which we have (or can fetch) a blob.
@@ -719,12 +722,21 @@ function renderChat() {
             el.textContent = m.text;
         } else if (m.type === 'file') {
             el.className = 'msg' + (m.sender === state.self_npub ? ' self' : '');
-            const inc = incoming[m.file.hash];
+            const f = m.file;
+            const inc = incoming[f.hash];
             const pct = inc ? Math.round((inc.got / inc.total) * 100) : 0;
+            const url = objectURLs[f.hash];
+            const type = (fileMeta[f.hash]?.type) || f.type || '';
+            const isImage = type.startsWith('image/');
+            let action;
+            if (inc) action = `<a class="dl">Downloading… ${pct}%</a><div class="progress"><i style="width:${pct}%"></i></div>`;
+            else if (url) action = `<a class="dl" href="${url}" download="${escapeHtml(f.name)}">Save</a>`;
+            else action = `<a class="dl" data-hash="${escapeHtml(f.hash)}">Download</a>`;
+            const preview = (url && isImage) ? `<img class="file-preview" src="${url}" alt="${escapeHtml(f.name)}">` : '';
             el.innerHTML = `<div class="meta"><span>${escapeHtml(nameOf(m.sender))}</span><span>${new Date(m.at).toLocaleTimeString()}</span></div>
-                <div class="body">📎 ${escapeHtml(m.file.name)} <span class="muted">(${fmtSize(m.file.size)})</span></div>
-                <a class="dl" data-hash="${escapeHtml(m.file.hash)}">${inc ? 'Downloading… ' + pct + '%' : 'Download'}</a>
-                ${inc ? `<div class="progress"><i style="width:${pct}%"></i></div>` : ''}`;
+                <div class="body">📎 ${escapeHtml(f.name)} <span class="muted">(${fmtSize(f.size)})</span></div>
+                ${preview}
+                ${action}`;
         } else {
             el.className = 'msg' + (m.sender === state.self_npub ? ' self' : '');
             el.innerHTML = `<div class="meta"><span>${escapeHtml(nameOf(m.sender))}</span><span>${new Date(m.at).toLocaleTimeString()}</span></div>
@@ -755,12 +767,18 @@ function renderFiles() {
     list.innerHTML = entries.slice(-100).reverse().map(f => {
         const inc = incoming[f.hash];
         const pct = inc ? Math.round((inc.got / inc.total) * 100) : 0;
+        const url = objectURLs[f.hash];
+        const action = inc
+            ? `<span class="muted small">${pct}%</span>`
+            : url
+                ? `<a class="dl" href="${url}" download="${escapeHtml(f.name)}">Save</a>`
+                : `<a class="dl" data-hash="${escapeHtml(f.hash)}">Get</a>`;
         return `<div class="msg file-item">
             <div class="icon">📄</div>
             <div class="info"><div class="n">${escapeHtml(f.name)}</div>
             <div class="sub muted">${fmtSize(f.size)}</div>
             ${inc ? `<div class="progress"><i style="width:${pct}%"></i></div>` : ''}</div>
-            <a class="dl" data-hash="${escapeHtml(f.hash)}">Get</a></div>`;
+            ${action}</div>`;
     }).join('');
 }
 
@@ -777,14 +795,25 @@ function sendChat(text) {
 // ---------------------------------------------------------------- files ----
 function registerFile(file, from) {
     if (!file || !file.hash) return;
-    if (!fileMeta[file.hash]) fileMeta[file.hash] = { hash: file.hash, name: file.name, size: file.size, from };
+    if (!fileMeta[file.hash]) fileMeta[file.hash] = { hash: file.hash, name: file.name, size: file.size, type: file.type || '', from };
+    else if (file.type && !fileMeta[file.hash].type) fileMeta[file.hash].type = file.type;
 }
 
 async function shareFile(file) {
+    if (!crypto.subtle) {
+        toast('File sharing needs a secure (https) connection');
+        throw new Error('crypto.subtle unavailable');
+    }
     const buf = await file.arrayBuffer();
     const hash = await sha256hex(buf);
-    await store.putFile({ hash, name: file.name, size: file.size, channel: null, blob: file });
-    const meta = { hash, name: file.name, size: file.size };
+    try {
+        await store.putFile({ hash, name: file.name, size: file.size, channel: null, blob: file });
+    } catch (e) {
+        // Storage may be full/blocked on mobile; sharing still works from memory.
+        console.warn('Could not cache file locally:', e);
+    }
+    objectURLs[hash] = objectURLs[hash] || URL.createObjectURL(file);
+    const meta = { hash, name: file.name, size: file.size, type: file.type || '' };
     registerFile(meta, state.self_npub);
     const msg = { type: 'file_meta', mid: uid(), file: meta, at: Date.now(), ttl: 8 };
     state.p2p.broadcast(msg);
@@ -803,20 +832,20 @@ async function serveFile(hash, requester) {
         const slice = buf.slice(seq * FILE_CHUNK, (seq + 1) * FILE_CHUNK);
         sendDirect(requester, {
             type: 'file_chunk', hash, seq, total,
-            name: f.name, size: f.size,
+            name: f.name, size: f.size, filetype: f.blob?.type || f.type || '',
             data: b64FromBuf(slice),
         });
         if (seq % 20 === 19) await new Promise(r => setTimeout(r, 0));
     }
 }
 
-async function requestFile(hash, name, size) {
+async function requestFile(hash, name, size, type) {
     if (!hash) return;
     const have = await store.getFile(hash);
     if (have && have.blob) { saveBlob(have.blob, have.name || name); return; }
     if (incoming[hash]) { toast('Already downloading…'); return; }
     const total = Math.max(1, Math.ceil((size || 0) / FILE_CHUNK));
-    incoming[hash] = { chunks: new Array(total), got: 0, total, name, size, from: null, at: Date.now() };
+    incoming[hash] = { chunks: new Array(total), got: 0, total, name, size, type: type || '', from: null, at: Date.now() };
     gossip({ type: 'file_req', hash, ttl: 8 });
     renderChat();
     toast('Requesting ' + (name || 'file') + '…');
@@ -827,6 +856,7 @@ async function receiveChunk(msg) {
     if (!inc) return;
     if (inc.from && inc.from !== msg.sender) return; // one provider at a time
     inc.from = msg.sender;
+    if (msg.filetype && !inc.type) inc.type = msg.filetype;
     if (msg.total && msg.total > inc.total) {
         inc.total = msg.total;
         inc.chunks.length = msg.total;
@@ -837,23 +867,44 @@ async function receiveChunk(msg) {
     }
     renderChat();
     if (inc.got >= inc.total) {
+        const silent = inc.silent;
+        const name = inc.name || msg.name || 'download';
+        const type = inc.type || msg.filetype || 'application/octet-stream';
         const parts = inc.chunks.map(d => bufFromB64(d || ''));
-        const blob = new Blob(parts, { type: 'application/octet-stream' });
-        await store.putFile({ hash: msg.hash, name: inc.name, size: blob.size, channel: null, blob });
+        const blob = new Blob(parts, { type });
+        // Clear progress first so a storage failure can never wedge at 100%.
         delete incoming[msg.hash];
-        if (inc.silent) {
-            // Fetched for an avatar (or similar): no download prompt.
+        objectURLs[msg.hash] = objectURLs[msg.hash] || URL.createObjectURL(blob);
+        registerFile({ hash: msg.hash, name, size: blob.size, type }, msg.sender);
+        try {
+            await store.putFile({ hash: msg.hash, name, size: blob.size, channel: null, blob });
+        } catch (e) {
+            console.warn('Could not cache file locally:', e);
+        }
+        if (silent) {
+            // Fetched for an avatar / inline image: no download prompt.
             hydrateAvatars();
+        } else if (window.matchMedia('(max-width: 860px)').matches) {
+            // Mobile browsers block programmatic downloads after async work;
+            // the card now offers a tap-to-Save link instead.
+            toast('Received ' + name + ' — tap Save');
         } else {
-            saveBlob(blob, inc.name);
-            toast('Received ' + inc.name);
+            saveBlob(blob, name);
+            toast('Received ' + name);
         }
         renderChat();
         renderFiles();
     }
 }
 
-function saveBlob(blob, name) {
+async function saveBlob(blob, name) {
+    const file = new File([blob], name || 'download', { type: blob.type || 'application/octet-stream' });
+    // On phones the share sheet is the reliable way to save; it needs a gesture,
+    // so this is only reached from a direct tap (or desktop auto-download).
+    if (window.matchMedia('(max-width: 860px)').matches && navigator.canShare?.({ files: [file] })) {
+        try { await navigator.share({ files: [file], title: name || 'download' }); return; }
+        catch (e) { if (e?.name === 'AbortError') return; }
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -1449,12 +1500,16 @@ function buildUI() {
     document.getElementById('file-input').addEventListener('change', async (e) => {
         const f = e.target.files[0];
         e.target.value = '';
-        if (f) await shareFile(f);
+        if (!f) return;
+        try { await shareFile(f); }
+        catch (err) { console.error(err); toast('Could not share file: ' + (err?.message || err)); }
     });
     document.getElementById('avatar-input').addEventListener('change', async (e) => {
         const f = e.target.files[0];
         e.target.value = '';
-        if (f) await setProfilePicture(f);
+        if (!f) return;
+        try { await setProfilePicture(f); }
+        catch (err) { console.error(err); toast('Could not set picture: ' + (err?.message || err)); }
     });
     // Clicking your own avatar in the People list also opens the picker.
     document.getElementById('people-list').addEventListener('click', (e) => {
@@ -1542,13 +1597,14 @@ function buildUI() {
         location.reload();
     });
 
-    // Delegated download clicks in chat / files list.
+    // Delegated download clicks in chat / files list. Real Save links (with an
+    // href) are handled by the browser so mobile gets a proper tap-to-save.
     document.addEventListener('click', (e) => {
         const a = e.target.closest('.dl');
-        if (!a) return;
+        if (!a || a.hasAttribute('href')) return;
         const hash = a.dataset.hash;
         const f = fileMeta[hash];
-        requestFile(hash, f?.name, f?.size).catch(console.error);
+        requestFile(hash, f?.name, f?.size, f?.type).catch(console.error);
     });
 }
 
