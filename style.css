@@ -133,7 +133,9 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .pill.warn { color: #b5793a; border-color: var(--color-button); }
 
 /* -------------------------------------------------------------- stage ---- */
-#stage { flex: 1; display: flex; min-height: 0; }
+/* Relative so the mobile sidebar/backdrop are bounded by the stage — i.e.
+   they stop above the controls bar instead of hiding the chat input. */
+#stage { flex: 1; display: flex; min-height: 0; position: relative; }
 
 #video-grid {
     flex: 1; min-width: 0;
@@ -210,8 +212,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 /* ------------------------------------------------------------ sidebar ---- */
 #sidebar-backdrop {
     display: block;
-    position: fixed; left: 0; right: 0; bottom: 0;
-    top: calc(var(--topbar-h) + var(--safe-top));
+    position: absolute; inset: 0;
     background: rgba(0, 0, 0, .4);
     z-index: 890;
 }
@@ -317,15 +318,13 @@ dialog textarea { resize: vertical; }
 
 /* ---------------------------------------------------------- responsive --- */
 @media (max-width: 860px) {
-    /* Sidebar becomes an overlay BELOW the topbar, so the ☰ button stays
-       reachable; a backdrop closes it on outside taps. */
+    /* Sidebar overlays the stage only (bounded above the controls bar), so the
+       chat input and send button stay visible. */
     #sidebar {
-        position: fixed; top: calc(var(--topbar-h) + var(--safe-top));
-        right: 0; bottom: 0; z-index: 900;
+        position: absolute; top: 0; right: 0; bottom: 0; z-index: 900;
         width: min(340px, 88vw);
         border-left: 1px solid var(--line);
         transform: translateX(100%); transition: transform .2s ease;
-        padding-bottom: var(--safe-bottom);
     }
     /* Keep it rendered off-canvas when collapsed so it can slide in. */
     #sidebar.collapsed { display: flex; }
