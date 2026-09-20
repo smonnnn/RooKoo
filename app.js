@@ -664,9 +664,9 @@ function refreshTiles() {
         const link = location.origin + location.pathname + '#' + state.self_npub;
         empty.innerHTML = `<div class="box">
             <h3>No one else is here yet</h3>
-            <p class="muted">Click <strong>Join</strong> to turn on your camera, then share this link or your npub with anyone. Anyone who has the npub of <em>anyone in the room</em> can join — no setup on your side.</p>
+            <p class="muted">Click <strong>Join</strong> to turn on your camera, then share this link or your ID with anyone. Anyone who has the ID of <em>anyone in the room</em> can join — no setup on your side.</p>
             <code>${escapeHtml(link)}</code>
-            <p class="muted small">Your peer ID: ${escapeHtml(state.self_npub)}</p>
+            <p class="muted small">Your ID: ${escapeHtml(state.self_npub)}</p>
         </div>`;
     } else if (empty) {
         empty.remove();
@@ -1424,8 +1424,8 @@ function buildUI() {
         e.preventDefault();
         const val = document.getElementById('add-peer-input').value;
         const npub = extractNpub(val);
-        if (!npub) { toast('That does not look like an npub or invite link'); return; }
-        if (npub === state.self_npub) { toast('That is your own npub'); return; }
+        if (!npub) { toast('That does not look like an ID or invite link'); return; }
+        if (npub === state.self_npub) { toast('That is your own ID'); return; }
         setJoinedVia(npub);
         addKnownPeer(npub);
         dialog.close();

@@ -20,10 +20,10 @@
                 <img class="brand-mark" src="./icon.png" alt="">
                 <span class="brand-name">RooKoo</span>
             </div>
-            <p class="muted">Peer-to-peer video meetings. No server, no account — your browser <em>is</em> the meeting.</p>
+            <p class="muted">Peer-to-peer video meetings.</p>
             <label for="login-username">Display name</label>
             <input id="login-username" type="text" placeholder="e.g. Ada" maxlength="40" required>
-            <p class="muted small">A random, private identity (npub) is generated for you. Share it with anyone to let them into the room.</p>
+            <p class="muted small">A random, private ID is generated for you. Share it with anyone to let them into the room.</p>
             <div id="login-error" class="error"></div>
             <button id="login-button" class="btn primary" type="submit">Enter meeting</button>
         </form>
@@ -107,8 +107,8 @@
     <dialog id="add-peer-dialog">
         <form method="dialog" id="add-peer-form">
             <h3>Join a room</h3>
-            <p class="muted small">Paste the invite link or the <code>npub…</code> of <strong>anyone already in the room</strong>. They will introduce you to everyone else — no other setup needed.</p>
-            <textarea id="add-peer-input" rows="3" placeholder="rookoo invite link or npub…" spellcheck="false"></textarea>
+            <p class="muted small">Paste the invite link or the <code>ID</code> of anyone already in the room.</p>
+            <textarea id="add-peer-input" rows="3" placeholder="rookoo invite link or ID…" spellcheck="false"></textarea>
             <div class="row end">
                 <button class="btn ghost" id="add-peer-cancel" type="button">Cancel</button>
                 <button class="btn primary" type="submit">Join</button>
