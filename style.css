@@ -330,6 +330,10 @@ dialog textarea { resize: vertical; }
     #sidebar.collapsed { display: flex; }
     #sidebar:not(.collapsed) { transform: none; }
 
+    /* iOS Safari zooms the page when a focused field is under 16px; keep form
+       controls at 16px so typing never triggers a zoom. */
+    input, textarea, select { font-size: 16px; }
+
     #video-grid { grid-template-columns: 1fr; gap: 8px; padding: 8px; }
     #topbar { gap: 6px; padding-right: 6px; }
     #topbar .brand-name { display: none; }
