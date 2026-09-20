@@ -150,6 +150,11 @@ function fmtSize(bytes) {
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / 1024 / 1024).toFixed(1) + ' MB';
 }
+// Progress percentage, or null while the total isn't known yet (avoids NaN%).
+function pctOf(inc) {
+    if (!inc || !inc.total) return null;
+    return Math.max(0, Math.min(100, Math.round((inc.got / inc.total) * 100)));
+}
 function b64FromBuf(buf) {
     const bytes = new Uint8Array(buf);
     let bin = '';
@@ -384,7 +389,9 @@ async function requestBlob(hash) {
     const f = await store.getFile(hash);
     if (f && f.blob) { objectURLs[hash] = URL.createObjectURL(f.blob); hydrateAvatars(); renderChat(); return; }
     const meta = fileMeta[hash] || {};
-    incoming[hash] = { chunks: [], got: 0, total: 0, name: meta.name || 'file', size: meta.size || 0, type: meta.type || '', from: null, silent: true };
+    // Seed the total from the known size so progress isn't indeterminate.
+    const total = meta.size ? Math.max(1, Math.ceil(meta.size / FILE_CHUNK)) : 0;
+    incoming[hash] = { chunks: [], got: 0, total, name: meta.name || 'file', size: meta.size || 0, type: meta.type || '', from: null, silent: true };
     gossip({ type: 'file_req', hash, ttl: 8 });
 }
 // Paint any avatar for which we have (or can fetch) a blob.
@@ -724,12 +731,12 @@ function renderChat() {
             el.className = 'msg' + (m.sender === state.self_npub ? ' self' : '');
             const f = m.file;
             const inc = incoming[f.hash];
-            const pct = inc ? Math.round((inc.got / inc.total) * 100) : 0;
+            const pct = pctOf(inc);
             const url = objectURLs[f.hash];
             const type = (fileMeta[f.hash]?.type) || f.type || '';
             const isImage = type.startsWith('image/');
             let action;
-            if (inc) action = `<a class="dl">Downloading… ${pct}%</a><div class="progress"><i style="width:${pct}%"></i></div>`;
+            if (inc) action = `<a class="dl">Downloading${pct == null ? '' : '… ' + pct + '%'}</a><div class="progress"><i style="width:${pct ?? 0}%"></i></div>`;
             else if (url) action = `<a class="dl" href="${url}" download="${escapeHtml(f.name)}">Save</a>`;
             else action = `<a class="dl" data-hash="${escapeHtml(f.hash)}">Download</a>`;
             const preview = (url && isImage) ? `<img class="file-preview" src="${url}" alt="${escapeHtml(f.name)}">` : '';
@@ -766,10 +773,10 @@ function renderFiles() {
     }
     list.innerHTML = entries.slice(-100).reverse().map(f => {
         const inc = incoming[f.hash];
-        const pct = inc ? Math.round((inc.got / inc.total) * 100) : 0;
+        const pct = pctOf(inc);
         const url = objectURLs[f.hash];
         const action = inc
-            ? `<span class="muted small">${pct}%</span>`
+            ? `<span class="muted small">${pct == null ? '…' : pct + '%'}</span>`
             : url
                 ? `<a class="dl" href="${url}" download="${escapeHtml(f.name)}">Save</a>`
                 : `<a class="dl" data-hash="${escapeHtml(f.hash)}">Get</a>`;
@@ -777,7 +784,7 @@ function renderFiles() {
             <div class="icon">📄</div>
             <div class="info"><div class="n">${escapeHtml(f.name)}</div>
             <div class="sub muted">${fmtSize(f.size)}</div>
-            ${inc ? `<div class="progress"><i style="width:${pct}%"></i></div>` : ''}</div>
+            ${inc ? `<div class="progress"><i style="width:${pct ?? 0}%"></i></div>` : ''}</div>
             ${action}</div>`;
     }).join('');
 }
@@ -866,7 +873,7 @@ async function receiveChunk(msg) {
         inc.got++;
     }
     renderChat();
-    if (inc.got >= inc.total) {
+    if (inc.total > 0 && inc.got >= inc.total) {
         const silent = inc.silent;
         const name = inc.name || msg.name || 'download';
         const type = inc.type || msg.filetype || 'application/octet-stream';
