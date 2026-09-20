@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0f1115">
+    <title>RooKoo — peer-to-peer video meetings</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234f8cff'/%3E%3Crect x='6' y='10' width='13' height='12' rx='3' fill='%23fff'/%3E%3Cpath d='M20 13.5l5-2.8v10.6l-5-2.8z' fill='%23fff'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="./style.css">
+    <script type="module" src="./app.js"></script>
+</head>
+<body>
+    <!-- ------------------------------------------------------------ login -->
+    <div id="login-overlay">
+        <form id="login-card" autocomplete="off">
+            <div class="brand big">
+                <span class="brand-mark"></span>
+                <span class="brand-name">RooKoo</span>
+            </div>
+            <p class="muted">Peer-to-peer video meetings. No server, no account — your browser <em>is</em> the meeting.</p>
+            <label for="login-username">Display name</label>
+            <input id="login-username" type="text" placeholder="e.g. Ada" maxlength="40" required>
+            <details id="login-advanced">
+                <summary>Use an existing identity (optional)</summary>
+                <label for="login-key">nsec… or 64-char hex key</label>
+                <input id="login-key" type="text" placeholder="leave empty to generate" spellcheck="false">
+            </details>
+            <div id="login-error" class="error"></div>
+            <button id="login-button" class="btn primary" type="submit">Enter meeting</button>
+        </form>
+    </div>
+
+    <!-- -------------------------------------------------------------- app -->
+    <div id="app" hidden>
+        <header id="topbar">
+            <div class="brand">
+                <span class="brand-mark"></span>
+                <span class="brand-name">RooKoo</span>
+            </div>
+            <div id="peer-status" class="pill" title="Peer connection status">Connecting…</div>
+            <div class="spacer"></div>
+            <button id="copy-invite" class="btn ghost" title="Copy your invite link">Copy invite</button>
+            <button id="add-peer-open" class="btn ghost">Add peer</button>
+            <button id="settings-open" class="btn ghost icon" title="Relay &amp; network settings">⚙</button>
+            <button id="sidebar-toggle" class="btn ghost icon" title="Toggle panel">☰</button>
+        </header>
+
+        <div id="stage">
+            <main id="video-grid"></main>
+            <aside id="sidebar">
+                <nav class="tabs">
+                    <button class="tab active" data-tab="chat">Chat</button>
+                    <button class="tab" data-tab="people">People</button>
+                    <button class="tab" data-tab="files">Files</button>
+                </nav>
+                <section class="tab-panel active" data-panel="chat">
+                    <div id="chat-log" class="log"></div>
+                    <form id="chat-form" class="row">
+                        <input id="chat-input" type="text" placeholder="Message the room…" maxlength="2000">
+                        <button class="btn primary" type="submit">Send</button>
+                    </form>
+                </section>
+                <section class="tab-panel" data-panel="people">
+                    <div id="people-list" class="log"></div>
+                </section>
+                <section class="tab-panel" data-panel="files">
+                    <div id="files-list" class="log"></div>
+                    <label class="btn primary file-pick">
+                        Share a file
+                        <input id="file-input" type="file" hidden>
+                    </label>
+                </section>
+            </aside>
+        </div>
+
+        <footer id="controls">
+            <button id="join-btn" class="btn primary">Join</button>
+            <div id="call-controls" hidden>
+                <button id="mic-btn" class="btn round" title="Toggle microphone">🎤</button>
+                <button id="cam-btn" class="btn round" title="Toggle camera">🎥</button>
+                <button id="screen-btn" class="btn round" title="Share your screen">🖥️</button>
+                <label class="filter-wrap" title="Video filter">
+                    <select id="filter-select">
+                        <option value="none">No filter</option>
+                        <option value="grayscale">Black &amp; white</option>
+                        <option value="sepia">Sepia</option>
+                        <option value="invert">Invert</option>
+                        <option value="warm">Warm</option>
+                        <option value="cool">Cool</option>
+                        <option value="vivid">Vivid</option>
+                        <option value="bright">Bright</option>
+                        <option value="dark">Dark</option>
+                        <option value="blur">Soft focus</option>
+                        <option value="pixelate">Pixelate</option>
+                    </select>
+                </label>
+                <button id="mirror-btn" class="btn round" title="Mirror your video">↔</button>
+                <button id="leave-btn" class="btn danger">Leave</button>
+            </div>
+        </footer>
+    </div>
+
+    <!-- ------------------------------------------------------------- modals -->
+    <dialog id="add-peer-dialog">
+        <form method="dialog" id="add-peer-form">
+            <h3>Add a peer</h3>
+            <p class="muted small">Paste a friend's invite link or <code>npub…</code> to connect. Only one side needs to add the other.</p>
+            <textarea id="add-peer-input" rows="3" placeholder="rookoo invite link or npub…" spellcheck="false"></textarea>
+            <div class="row end">
+                <button class="btn ghost" id="add-peer-cancel" type="button">Cancel</button>
+                <button class="btn primary" type="submit">Connect</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="settings-dialog">
+        <form method="dialog" id="settings-form">
+            <h3>Network settings</h3>
+            <p class="muted small">RooKoo uses Nostr relays only to introduce peers (WebRTC signaling). Chat, video and files never touch a server. Public relays are often rate-limited, so a relay you control makes connections far more reliable.</p>
+            <label for="relays-input">Nostr relay URLs (one per line)</label>
+            <textarea id="relays-input" rows="4" spellcheck="false" placeholder="wss://relay.example.com"></textarea>
+            <label for="turn-input">TURN server URL (optional, for strict NATs)</label>
+            <input id="turn-input" type="text" spellcheck="false" placeholder="turn:turn.example.com:3478">
+            <div class="row end">
+                <button class="btn ghost" id="settings-cancel" type="button">Cancel</button>
+                <button class="btn primary" type="submit">Save &amp; reload</button>
+            </div>
+        </form>
+    </dialog>
+
+    <div id="toast-wrap"></div>
+</body>
+</html>
