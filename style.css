@@ -313,7 +313,8 @@ dialog {
 }
 dialog::backdrop { background: rgba(0, 0, 0, .5); }
 dialog h3 { margin: 0 0 6px; }
-dialog .row { border: none; padding: 12px 0 0; }
+dialog .row { border: none; padding: 12px 0 0; flex-wrap: wrap; gap: 6px; }
+dialog .row button { flex: 0 1 auto; }
 dialog label { display: block; font-size: .85rem; color: var(--muted); margin: 14px 0 -6px; }
 dialog textarea, dialog input { margin-top: 6px; }
 dialog textarea { resize: vertical; }
@@ -366,6 +367,8 @@ dialog textarea { resize: vertical; }
     #call-controls { gap: 6px; flex-wrap: wrap; justify-content: center; }
     .filter-wrap select { max-width: 132px; padding: 8px 8px; }
     #leave-btn { padding: 10px 14px; }
+    /* Dialog footers stack so buttons can't overflow a narrow screen. */
+    dialog .row button { flex: 1 1 100%; }
     #controls { padding: 8px 8px calc(8px + var(--safe-bottom)); }
     .log { padding: 8px; }
     /* Toasts drop from the top on mobile so they never cover the controls. */
