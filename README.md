@@ -8,6 +8,8 @@ and every participant is an equal peer.
 Built on the [NostrP2P library](https://github.com/HommelWater/Bombus/tree/p2p)
 from the Bombus `p2p` branch.
 
+**Live at <https://smonnnn.github.io/RooKoo/>**
+
 ## Features
 
 - **Video chat** — full-mesh WebRTC, one connection per participant.
@@ -61,7 +63,9 @@ No server ever sees media or messages. Relays only introduce peers.
 
 ## Running it
 
-Any static file server works (there is no build step):
+**Hosted version:** <https://smonnnn.github.io/RooKoo/>
+
+Or run it locally — any static file server works (there is no build step):
 
 ```bash
 cd RooKoo
