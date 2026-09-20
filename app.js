@@ -116,7 +116,8 @@ const chatMids = new Set();
 const tiles = {};         // npub -> tile element
 const usersWithTiles = new Set();
 const fileMeta = {};      // hash -> {hash, name, size}
-const incoming = {};      // hash -> {chunks, got, total, name, size, from, blob?}
+const incoming = {};      // hash -> {chunks, got, total, name, size, from, silent?}
+const objectURLs = {};    // hash -> blob: URL (avatars and shared files)
 let rafId = 0;
 let heartbeatTick = 0;
 
@@ -214,7 +215,7 @@ async function handleMessage(npub, msg) {
         return;
     }
 
-    if (msg.username) rememberUser(from, msg.username);
+    if (msg.username) rememberUser(from, msg.username, msg.pfp);
     if (msg.peers) for (const p of msg.peers) addKnownPeer(p, false);
     if (msg.joinedVia !== undefined) recordIntroducer(from, msg.joinedVia);
 
@@ -223,6 +224,8 @@ async function handleMessage(npub, msg) {
         case 'profile':
             addKnownPeer(from);
             renderPeople();
+            refreshTiles();
+            hydrateAvatars();
             break;
         case 'peers':
             renderPeople();
@@ -294,10 +297,18 @@ async function addKnownPeer(npub) {
     renderPeople();
     updatePeerStatus();
 }
-function rememberUser(npub, username) {
-    if (!npub || npub === state.self_npub) return;
+function rememberUser(npub, username, pfp) {
+    if (!npub || npub === state.self_npub) {
+        // Our own profile may arrive from another device via sync; adopt it.
+        if (npub === state.self_npub && pfp) {
+            state.users[npub] = { ...state.users[npub], npub, username: state.username, pfp };
+            saveProfile();
+        }
+        return;
+    }
     const u = state.users[npub] || { npub };
     u.username = username || u.username;
+    if (pfp !== undefined) u.pfp = pfp || null;
     state.users[npub] = u;
 }
 // Signed join provenance: a peer's `hello`/`profile` is signature-verified by
@@ -324,10 +335,115 @@ function setJoinedVia(npub) {
     state.joinedVia = npub;
     localStorage.setItem('rookoo_joined_via', npub);
 }
+// Join through an invite fragment (#npub1…). Called at startup and on
+// hashchange, so pasting an invite link into an already-open app connects
+// immediately (a fragment-only change does not reload the page).
+function handleInviteFromHash() {
+    const invited = extractNpub(location.hash.slice(1));
+    if (!invited || invited === state.self_npub || !state.p2p) return false;
+    setJoinedVia(invited);
+    addKnownPeer(invited);
+    try { history.replaceState(null, '', location.pathname + location.search); } catch { /* ignore */ }
+    toast('Joining the room through ' + shortNpub(invited) + '…');
+    return true;
+}
 function extractNpub(text) {
     if (!text) return null;
     const m = String(text).match(/npub1[02-9ac-hj-np-z]{20,}/i);
     return m ? m[0] : null;
+}
+
+// ------------------------------------------------------ profile pictures ---
+// Pictures are content-addressed like any shared file: the blob is stored
+// locally under its SHA-256 hash, the hash travels in hello/profile, and peers
+// fetch the blob on demand over the existing chunked file transport.
+function myPfp() {
+    return state.users[state.self_npub]?.pfp || null;
+}
+function saveProfile() {
+    localStorage.setItem('rookoo_profile', JSON.stringify({
+        username: state.username,
+        pfp: myPfp(),
+    }));
+}
+async function fileURL(hash) {
+    if (!hash) return null;
+    if (objectURLs[hash]) return objectURLs[hash];
+    const f = await store.getFile(hash);
+    if (f && f.blob) {
+        objectURLs[hash] = URL.createObjectURL(f.blob);
+        return objectURLs[hash];
+    }
+    return null;
+}
+// Fetch a blob (e.g. someone's avatar) without triggering a download.
+async function requestBlob(hash) {
+    if (!hash || objectURLs[hash] || incoming[hash]) return;
+    const f = await store.getFile(hash);
+    if (f && f.blob) { hydrateAvatars(); return; }
+    incoming[hash] = { chunks: [], got: 0, total: 0, name: 'avatar', size: 0, from: null, silent: true };
+    gossip({ type: 'file_req', hash, ttl: 8 });
+}
+// Paint any avatar for which we have (or can fetch) a blob.
+async function hydrateAvatars() {
+    for (const el of document.querySelectorAll('[data-avatar]')) {
+        const npub = el.dataset.avatar;
+        const hash = npub === state.self_npub ? myPfp() : state.users[npub]?.pfp;
+        if (!hash) { el.classList.remove('has-img'); continue; }
+        const url = await fileURL(hash);
+        if (url) {
+            let img = el.querySelector('img');
+            if (!img) { img = document.createElement('img'); img.alt = ''; el.prepend(img); }
+            if (img.src !== url) img.src = url;
+            el.classList.add('has-img');
+        } else {
+            el.classList.remove('has-img');
+            requestBlob(hash);
+        }
+    }
+}
+// Downscale to a small square-ish JPEG so avatars stay cheap to transfer.
+async function fileToAvatarBlob(file) {
+    try {
+        const bitmap = await createImageBitmap(file);
+        const max = 256;
+        const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+        const w = Math.max(1, Math.round(bitmap.width * scale));
+        const h = Math.max(1, Math.round(bitmap.height * scale));
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+        bitmap.close?.();
+        const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.85));
+        if (blob) return blob;
+    } catch { /* fall back to the original file */ }
+    return file;
+}
+async function setProfilePicture(file) {
+    if (!file || !file.type.startsWith('image/')) { toast('Pick an image file'); return; }
+    if (file.size > 12 * 1024 * 1024) { toast('Image is too large (max 12 MB)'); return; }
+    toast('Updating profile picture…');
+    const blob = await fileToAvatarBlob(file);
+    const buf = await blob.arrayBuffer();
+    const hash = await sha256hex(buf);
+    await store.putFile({ hash, name: 'avatar.jpg', size: blob.size, channel: null, blob });
+    objectURLs[hash] = URL.createObjectURL(blob);
+    state.users[state.self_npub] = { ...state.users[state.self_npub], npub: state.self_npub, username: state.username, pfp: hash };
+    saveProfile();
+    // Announce the new picture to the room (signed), then repaint.
+    gossip({ type: 'profile', username: state.username, peers: knownPeers(), joinedVia: state.joinedVia, pfp: hash });
+    renderPeople();
+    refreshTiles();
+    hydrateAvatars();
+    toast('Profile picture updated');
+}
+function clearProfilePicture() {
+    state.users[state.self_npub] = { ...state.users[state.self_npub], npub: state.self_npub, username: state.username, pfp: null };
+    saveProfile();
+    gossip({ type: 'profile', username: state.username, peers: knownPeers(), joinedVia: state.joinedVia, pfp: null });
+    renderPeople();
+    refreshTiles();
+    hydrateAvatars();
 }
 
 // -------------------------------------------------------------- identity ---
@@ -365,15 +481,16 @@ function startApp(sk) {
             addKnownPeer(npub);
             // hello is signed and carries the introducer, so the receiver can
             // verify both who we are and which npub we joined through.
-            sendDirect(npub, { type: 'hello', username: state.username, peers: knownPeers(), joinedVia: state.joinedVia });
+            sendDirect(npub, { type: 'hello', username: state.username, peers: knownPeers(), joinedVia: state.joinedVia, pfp: myPfp() });
             // Flood our profile (incl. provenance) so the whole room converges.
-            gossip({ type: 'profile', username: state.username, peers: knownPeers(), joinedVia: state.joinedVia });
+            gossip({ type: 'profile', username: state.username, peers: knownPeers(), joinedVia: state.joinedVia, pfp: myPfp() });
             if (chatLog.length) sendDirect(npub, { type: 'chat_history', messages: chatLog.slice(-40) });
             if (media.joined) {
                 sendDirect(npub, { type: 'media_state', mic: media.micOn, cam: media.camOn, filter: media.filter, sharing: !!media.screenStream });
                 if (state.self_npub > npub) maybeOffer(npub);
             }
             renderPeople();
+            hydrateAvatars();
             updatePeerStatus();
         },
         onMessage: (npub, msg) => { handleMessage(npub, msg).catch(console.error); },
@@ -390,6 +507,10 @@ function startApp(sk) {
     state.self_npub = state.p2p.npub;
     media.booted = true;
 
+    // Restore our own profile (name + picture) from this browser.
+    const savedProfile = JSON.parse(localStorage.getItem('rookoo_profile') || 'null');
+    state.users[state.self_npub] = { npub: state.self_npub, username: state.username, pfp: savedProfile?.pfp || null };
+
     // The room is entered by knowing anyone's npub. We remember the npub whose
     // invite we used (our introducer) and reconnect to the room through them
     // on future loads — no peer list to manage.
@@ -398,13 +519,12 @@ function startApp(sk) {
 
     // Invite links: .../#npub1… — joining is immediate and needs no setup on
     // the other side, because the library accepts unknown peers (open: true).
-    const invited = extractNpub(location.hash.slice(1));
-    if (invited && invited !== state.self_npub) {
-        setJoinedVia(invited);
-        addKnownPeer(invited);
-    } else if (state.joinedVia) {
+    if (!handleInviteFromHash() && state.joinedVia) {
         addKnownPeer(state.joinedVia);
     }
+    // Pasting an invite into the address bar of an already-open app only
+    // changes the fragment; catch that here.
+    window.addEventListener('hashchange', handleInviteFromHash);
 
     document.getElementById('app').hidden = false;
     buildUI();
@@ -429,7 +549,7 @@ function tick() {
     heartbeatTick++;
     // Periodic profile gossip keeps join-provenance and the peer set converged.
     if (heartbeatTick % 12 === 0 && state.p2p.connections.size) {
-        gossip({ type: 'profile', username: state.username, peers: knownPeers(), joinedVia: state.joinedVia });
+        gossip({ type: 'profile', username: state.username, peers: knownPeers(), joinedVia: state.joinedVia, pfp: myPfp() });
     }
     if (media.joined) {
         if (heartbeatTick % 2 === 0) announceMedia();
@@ -461,7 +581,7 @@ function ensureTile(npub) {
     el.className = 'tile' + (isSelf ? ' self' : '');
     el.dataset.npub = npub;
     el.innerHTML =
-        `<div class="avatar">${escapeHtml(initials(npub))}</div>` +
+        `<div class="avatar" data-avatar="${escapeHtml(npub)}"><img alt=""><span class="initials">${escapeHtml(initials(npub))}</span></div>` +
         `<video autoplay playsinline></video>` +
         `<div class="label"><span class="name"></span></div>` +
         `<div class="badges"></div>`;
@@ -502,7 +622,10 @@ function refreshTiles() {
             : (media.peerState[npub] || {});
         const vid = el.querySelector('video');
         el.querySelector('.name').textContent = nameOf(npub) + (isSelf ? ' (you)' : '');
-        el.querySelector('.avatar').textContent = initials(npub);
+        const av = el.querySelector('.avatar');
+        av.dataset.avatar = npub;
+        const init = av.querySelector('.initials');
+        if (init) init.textContent = initials(npub);
 
         let hasVideo = false;
         if (isSelf) {
@@ -548,6 +671,8 @@ function refreshTiles() {
     } else if (empty) {
         empty.remove();
     }
+
+    hydrateAvatars();
 }
 
 function renderPeople() {
@@ -558,7 +683,7 @@ function renderPeople() {
     const selfIntro = state.joinedVia ? 'joined via ' + nameOf(state.joinedVia) : 'room seed';
     const selfSub = (media.joined ? (media.micOn ? 'mic on' : 'muted') + ' · ' + (media.camOn ? 'camera on' : 'camera off') : 'not in call') + ' · ' + selfIntro;
     rows.push(`<div class="person">
-        <div class="av" style="background:linear-gradient(135deg,#4f8cff,#8f5cff)">${escapeHtml(initials(state.self_npub))}</div>
+        <div class="av" data-avatar="${escapeHtml(state.self_npub)}" title="Change your picture" style="cursor:pointer"><img alt=""><span class="initials">${escapeHtml(initials(state.self_npub))}</span></div>
         <div class="info"><div>${escapeHtml(nameOf(state.self_npub))} (you)</div>
         <div class="sub">${escapeHtml(selfSub)}</div></div>
         <div class="dot ${conns.size ? 'on' : ''}"></div></div>`);
@@ -573,11 +698,12 @@ function renderPeople() {
         const intro = introducerLabel(npub);
         if (intro) sub += ' · ' + intro;
         rows.push(`<div class="person">
-            <div class="av">${escapeHtml(initials(npub))}</div>
+            <div class="av" data-avatar="${escapeHtml(npub)}"><img alt=""><span class="initials">${escapeHtml(initials(npub))}</span></div>
             <div class="info"><div>${escapeHtml(nameOf(npub))}</div><div class="sub">${escapeHtml(sub)}</div></div>
             <div class="dot ${conns.has(npub) ? 'on' : ''}"></div></div>`);
     }
     list.innerHTML = rows.join('');
+    hydrateAvatars();
 }
 
 function renderChat() {
@@ -713,9 +839,15 @@ async function receiveChunk(msg) {
         const blob = new Blob(parts, { type: 'application/octet-stream' });
         await store.putFile({ hash: msg.hash, name: inc.name, size: blob.size, channel: null, blob });
         delete incoming[msg.hash];
-        saveBlob(blob, inc.name);
-        toast('Received ' + inc.name);
+        if (inc.silent) {
+            // Fetched for an avatar (or similar): no download prompt.
+            hydrateAvatars();
+        } else {
+            saveBlob(blob, inc.name);
+            toast('Received ' + inc.name);
+        }
         renderChat();
+        renderFiles();
     }
 }
 
@@ -1252,6 +1384,16 @@ function buildUI() {
         const f = e.target.files[0];
         e.target.value = '';
         if (f) await shareFile(f);
+    });
+    document.getElementById('avatar-input').addEventListener('change', async (e) => {
+        const f = e.target.files[0];
+        e.target.value = '';
+        if (f) await setProfilePicture(f);
+    });
+    // Clicking your own avatar in the People list also opens the picker.
+    document.getElementById('people-list').addEventListener('click', (e) => {
+        const av = e.target.closest('.av[data-avatar]');
+        if (av && av.dataset.avatar === state.self_npub) document.getElementById('avatar-input').click();
     });
 
     document.querySelectorAll('.tab').forEach(tab => {
