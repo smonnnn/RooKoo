@@ -3,9 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#0f1115">
+    <meta name="theme-color" content="#B8C4D0">
     <title>RooKoo — peer-to-peer video meetings</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234f8cff'/%3E%3Crect x='6' y='10' width='13' height='12' rx='3' fill='%23fff'/%3E%3Cpath d='M20 13.5l5-2.8v10.6l-5-2.8z' fill='%23fff'/%3E%3C/svg%3E">
+    <link rel="icon" href="./icon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="./style.css">
     <script type="module" src="./app.js"></script>
 </head>
@@ -14,17 +17,13 @@
     <div id="login-overlay">
         <form id="login-card" autocomplete="off">
             <div class="brand big">
-                <span class="brand-mark"></span>
+                <img class="brand-mark" src="./icon.png" alt="">
                 <span class="brand-name">RooKoo</span>
             </div>
             <p class="muted">Peer-to-peer video meetings. No server, no account — your browser <em>is</em> the meeting.</p>
             <label for="login-username">Display name</label>
             <input id="login-username" type="text" placeholder="e.g. Ada" maxlength="40" required>
-            <details id="login-advanced">
-                <summary>Use an existing identity (optional)</summary>
-                <label for="login-key">nsec… or 64-char hex key</label>
-                <input id="login-key" type="text" placeholder="leave empty to generate" spellcheck="false">
-            </details>
+            <p class="muted small">A random, private identity (npub) is generated for you. Share it with anyone to let them into the room.</p>
             <div id="login-error" class="error"></div>
             <button id="login-button" class="btn primary" type="submit">Enter meeting</button>
         </form>
@@ -34,13 +33,13 @@
     <div id="app" hidden>
         <header id="topbar">
             <div class="brand">
-                <span class="brand-mark"></span>
+                <img class="brand-mark" src="./icon.png" alt="">
                 <span class="brand-name">RooKoo</span>
             </div>
             <div id="peer-status" class="pill" title="Peer connection status">Connecting…</div>
             <div class="spacer"></div>
             <button id="copy-invite" class="btn ghost" title="Copy your invite link">Copy invite</button>
-            <button id="add-peer-open" class="btn ghost">Add peer</button>
+            <button id="add-peer-open" class="btn ghost">Join room</button>
             <button id="settings-open" class="btn ghost icon" title="Relay &amp; network settings">⚙</button>
             <button id="sidebar-toggle" class="btn ghost icon" title="Toggle panel">☰</button>
         </header>
@@ -79,19 +78,19 @@
                 <button id="mic-btn" class="btn round" title="Toggle microphone">🎤</button>
                 <button id="cam-btn" class="btn round" title="Toggle camera">🎥</button>
                 <button id="screen-btn" class="btn round" title="Share your screen">🖥️</button>
-                <label class="filter-wrap" title="Video filter">
+                <label class="filter-wrap" title="Background effect">
                     <select id="filter-select">
-                        <option value="none">No filter</option>
-                        <option value="grayscale">Black &amp; white</option>
-                        <option value="sepia">Sepia</option>
-                        <option value="invert">Invert</option>
-                        <option value="warm">Warm</option>
-                        <option value="cool">Cool</option>
-                        <option value="vivid">Vivid</option>
-                        <option value="bright">Bright</option>
-                        <option value="dark">Dark</option>
-                        <option value="blur">Soft focus</option>
-                        <option value="pixelate">Pixelate</option>
+                        <option value="none">No effect</option>
+                        <option value="blur">Blur background</option>
+                        <option value="blur-strong">Blur background (strong)</option>
+                        <option value="pixelate">Pixelate background</option>
+                        <option value="grayscale">B&amp;W background</option>
+                        <option value="remove">Remove background</option>
+                        <option value="bg-blue">Blue background</option>
+                        <option value="bg-green">Green background</option>
+                        <option value="bg-white">White background</option>
+                        <option value="bg-warm">Warm background</option>
+                        <option value="bg-gradient">Gradient background</option>
                     </select>
                 </label>
                 <button id="mirror-btn" class="btn round" title="Mirror your video">↔</button>
@@ -103,12 +102,12 @@
     <!-- ------------------------------------------------------------- modals -->
     <dialog id="add-peer-dialog">
         <form method="dialog" id="add-peer-form">
-            <h3>Add a peer</h3>
-            <p class="muted small">Paste a friend's invite link or <code>npub…</code> to connect. Only one side needs to add the other.</p>
+            <h3>Join a room</h3>
+            <p class="muted small">Paste the invite link or the <code>npub…</code> of <strong>anyone already in the room</strong>. They will introduce you to everyone else — no other setup needed.</p>
             <textarea id="add-peer-input" rows="3" placeholder="rookoo invite link or npub…" spellcheck="false"></textarea>
             <div class="row end">
                 <button class="btn ghost" id="add-peer-cancel" type="button">Cancel</button>
-                <button class="btn primary" type="submit">Connect</button>
+                <button class="btn primary" type="submit">Join</button>
             </div>
         </form>
     </dialog>
@@ -122,6 +121,7 @@
             <label for="turn-input">TURN server URL (optional, for strict NATs)</label>
             <input id="turn-input" type="text" spellcheck="false" placeholder="turn:turn.example.com:3478">
             <div class="row end">
+                <button class="btn ghost" id="settings-identity" type="button">New random identity</button>
                 <button class="btn ghost" id="settings-cancel" type="button">Cancel</button>
                 <button class="btn primary" type="submit">Save &amp; reload</button>
             </div>

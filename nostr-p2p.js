@@ -86,6 +86,26 @@ const ANSWER_TIMEOUT = 18 * 1000;        // answering is one relay round-trip,
 const SILENCE_TIMEOUT = 40 * 1000;       // no inbound traffic => peer is gone
                                          // (pings every tick; ~3 missed = drop)
 
+// --- ICE candidate freshness -------------------------------------------------
+// The handshake is retried (offers/candidates are re-sent every maintenance
+// tick) and relay duplication can deliver the same signal several times. A
+// candidate minted for an earlier attempt carries the ice-ufrag it was created
+// for; once the peer connection has moved on, that ufrag no longer matches and
+// addIceCandidate throws "Unknown ufrag". Detect and drop those instead of
+// letting them spam the console.
+function remoteIceUfrag(pc) {
+    const sdp = pc?.remoteDescription?.sdp;
+    if (!sdp) return null;
+    const m = sdp.match(/^a=ice-ufrag:(.+)$/m);
+    return m ? m[1].trim() : null;
+}
+
+function isStaleCandidate(pc, candidate) {
+    const uf = candidate?.usernameFragment;
+    const remote = remoteIceUfrag(pc);
+    return !!(uf && remote && uf !== remote);
+}
+
 // A session is the ONE source of truth for a peer relationship:
 //   { npub, peerPk, pc, channel, phase: 'connecting'|'connected',
 //     initiator, createdAt, connectedAt, lastActivity, iceBuffer, authSent }
@@ -99,7 +119,16 @@ export class NostrP2P {
         this.iceServers = resolveIceServers(options.iceServers);
         this.pk = getPublicKey(this.sk);
         this.npub = nip19.npubEncode(this.pk);
-        this.pool = new SimplePool();
+        // Event-driven handshakes: whenever a relay connection comes up we are
+        // told immediately and can (re)send pending offers instead of waiting
+        // for the next maintenance tick. `_relayReadyQueued` coalesces the
+        // burst of per-relay callbacks into one microtask.
+        this._relayReadyQueued = false;
+        this._relayConnected = new Map(); // url -> bool, for transition detection
+        this.pool = new SimplePool({
+            onRelayConnectionSuccess: () => this._onRelayReady(),
+            onRelayConnectionFailure: () => { /* retried by maintenance/backoff */ },
+        });
 
         this.onConnect = options.onConnect || null;
         this.onDisconnect = options.onDisconnect || null;
@@ -161,6 +190,77 @@ export class NostrP2P {
         if (npub === this.npub || this.peers.has(npub)) return;
         this.peers.add(npub);
         this._maintenance();
+    }
+
+    // Called when a relay socket becomes usable. Instead of polling on a 10s
+    // tick, we push every in-flight handshake right away once a relay that can
+    // actually carry the offer/answer is up.
+    //
+    // This callback also fires on publish success, so we react only to a relay
+    // *newly* transitioning to connected — otherwise a retry publish would
+    // trigger another retry forever.
+    _onRelayReady() {
+        let newly = false;
+        try {
+            const status = this.pool.listConnectionStatus ? this.pool.listConnectionStatus() : new Map();
+            for (const [url, connected] of status) {
+                const was = this._relayConnected.get(url);
+                if (connected && was !== true) newly = true;
+                this._relayConnected.set(url, connected);
+            }
+        } catch { /* ignore */ }
+        if (!newly) return;
+        this._queueRelayRetry();
+    }
+
+    _queueRelayRetry() {
+        if (this._relayReadyQueued) return;
+        this._relayReadyQueued = true;
+        queueMicrotask(() => {
+            this._relayReadyQueued = false;
+            for (const session of this.sessions.values()) {
+                if (session.phase !== 'connecting') continue;
+                this._retryHandshake(session, true);
+            }
+            this._maintenance();
+        });
+    }
+
+    // One-shot, per-session retry with exponential backoff. The first attempt
+    // is immediate (the offer is already sent at session creation); retries
+    // fire at 0.5s, 1s, 2s, 4s, then every 5s until the handshake completes.
+    // This replaces the old fixed 10s re-send cadence.
+    _scheduleRetry(session) {
+        if (session.phase !== 'connecting' || session._retryTimer) return;
+        const attempt = session._retryAttempt || 0;
+        const delay = Math.min(500 * 2 ** attempt, 5000);
+        session._retryAttempt = attempt + 1;
+        session._retryTimer = setTimeout(() => {
+            session._retryTimer = null;
+            if (this.sessions.get(session.npub) !== session || session.phase !== 'connecting') return;
+            this._retryHandshake(session, false);
+            this._scheduleRetry(session);
+        }, delay);
+    }
+
+    _retryHandshake(session, immediate) {
+        if (!session || session.phase !== 'connecting' || !session.peerPk) return;
+        if (immediate) {
+            if (session._retryTimer) { clearTimeout(session._retryTimer); session._retryTimer = null; }
+            session._retryAttempt = 0;
+        }
+        try {
+            if (session.initiator && session.pc.localDescription && session.offerTs) {
+                // ots identifies the attempt across re-sends so the peer can
+                // dedup by it (not by event time).
+                this._sendSignal(session.peerPk, { type: 'offer', ots: session.offerTs, sdp: { type: session.pc.localDescription.type, sdp: session.pc.localDescription.sdp } });
+                if (session.myCandidates.length) this._sendSignal(session.peerPk, { type: 'ice-candidates', candidates: session.myCandidates });
+            } else if (!session.initiator && session.myCandidates.length && session.pc.localDescription) {
+                // The answering side benefits too: a lost answer/candidate set
+                // is otherwise only retried when the offerer re-offers.
+                this._sendSignal(session.peerPk, { type: 'ice-candidates', candidates: session.myCandidates });
+            }
+        } catch { /* next retry */ }
     }
 
     removePeer(npub) {
@@ -262,6 +362,9 @@ export class NostrP2P {
             authSent: false
         };
         this.sessions.set(npub, session);
+        // Start the event-driven retry ladder immediately; the offer itself is
+        // sent as soon as localDescription exists (see below).
+        this._scheduleRetry(session);
 
         pc.onicecandidate = (e) => {
             if (e.candidate && session.peerPk) {
@@ -291,10 +394,14 @@ export class NostrP2P {
                 .then(() => {
                     // ots identifies this handshake attempt across re-sends:
                     // relays lose publishes (socket still connecting, dropped
-                    // subs), so the offer is re-sent every maintenance tick,
-                    // and the peer must dedup by ots – not event.created_at.
+                    // subs), so the offer is re-sent with backoff, and the peer
+                    // must dedup by ots – not by event.created_at.
                     session.offerTs = Math.floor(Date.now() / 1000);
                     this._sendSignal(session.peerPk, { type: 'offer', ots: session.offerTs, sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } });
+                    // Restart the backoff ladder now that the first offer is out.
+                    if (session._retryTimer) { clearTimeout(session._retryTimer); session._retryTimer = null; }
+                    session._retryAttempt = 0;
+                    this._scheduleRetry(session);
                 })
                 .catch(() => { if (this.sessions.get(npub) === session) this._dropSession(npub); });
         }
@@ -323,6 +430,7 @@ export class NostrP2P {
     _closeSession(npub) {
         const s = this.sessions.get(npub);
         if (!s) return null;
+        if (s._retryTimer) { clearTimeout(s._retryTimer); s._retryTimer = null; }
         this.sessions.delete(npub);
         try { s.channel?.close(); } catch { /* ignore */ }
         try { s.pc.close(); } catch { /* ignore */ }
@@ -378,6 +486,7 @@ export class NostrP2P {
             session.peerPk = msg.event.pubkey;
             session.phase = 'connected';
             session.connectedAt = Date.now();
+            if (session._retryTimer) { clearTimeout(session._retryTimer); session._retryTimer = null; }
             if (!session.authSent) {
                 session.authSent = true;
                 this._sendAuth(session);
@@ -410,21 +519,10 @@ export class NostrP2P {
                     this._dropSession(npub, 'handshake timeout');
                     continue;
                 }
-                // Re-send the offer every tick until the handshake lands:
-                // publishes to relays can silently fail while sockets connect.
-                // Re-trickle our ICE candidates too — the peer's session may
-                // not have existed (or may have been replaced) when they were
-                // first sent, and lost candidates break real-world ICE.
-                if (s.initiator && s.pc.localDescription && s.offerTs) {
-                    try {
-                        this._sendSignal(s.peerPk, { type: 'offer', ots: s.offerTs, sdp: { type: s.pc.localDescription.type, sdp: s.pc.localDescription.sdp } });
-                        if (s.myCandidates.length) this._sendSignal(s.peerPk, { type: 'ice-candidates', candidates: s.myCandidates });
-                    } catch { /* retry next tick */ }
-                } else if (!s.initiator && s.myCandidates.length && s.pc.localDescription) {
-                    // Answering side: our candidates may equally have been lost
-                    // before the offerer's answer-processing session existed.
-                    try { this._sendSignal(s.peerPk, { type: 'ice-candidates', candidates: s.myCandidates }); } catch { /* retry next tick */ }
-                }
+                // Retries are event-driven now (backoff ladder + relay-ready
+                // hooks); this is only a safety net in case a session somehow
+                // lost its timer.
+                if (!s._retryTimer) this._scheduleRetry(s);
                 continue;
             }
             // A session challenged on resume() must have shown inbound
@@ -488,7 +586,12 @@ export class NostrP2P {
             this._sub = this.pool.subscribeMany(
                 this.relays,
                 { kinds: [KIND_SIGNAL], '#p': [this.pk], since: Math.floor(Date.now() / 1000) - 30 },
-                { onevent: (event) => this.handleSignal(event) }
+                {
+                    onevent: (event) => this.handleSignal(event),
+                    // Subscription is live: any in-flight handshake can be
+                    // retried now rather than waiting for a timer.
+                    oneose: () => this._queueRelayRetry(),
+                }
             );
         } catch (e) {
             console.warn('Relay subscribe failed, will retry', e);
@@ -612,14 +715,18 @@ export class NostrP2P {
                 await this._flushIce(session);
             } else if (payload.type === 'ice-candidate' && payload.candidate) {
                 if (pc.remoteDescription?.type) {
-                    await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+                    if (!isStaleCandidate(pc, payload.candidate)) {
+                        await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+                    }
                 } else {
                     session.iceBuffer.push(payload.candidate);
                 }
             } else if (payload.type === 'ice-candidates' && Array.isArray(payload.candidates)) {
                 for (const candidate of payload.candidates) {
                     if (pc.remoteDescription?.type) {
-                        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                        if (!isStaleCandidate(pc, candidate)) {
+                            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                        }
                     } else {
                         session.iceBuffer.push(candidate);
                     }
@@ -627,13 +734,21 @@ export class NostrP2P {
             }
         } catch (e) {
             // Stale or raced signaling message – ignore; maintenance retries.
-            console.warn('Signaling error', e);
+            // "Unknown ufrag" is the routine stale-candidate case, so it is
+            // logged at debug level rather than warned about.
+            const msg = String(e?.message || e);
+            if (/unknown ufrag/i.test(msg)) {
+                console.debug('[p2p] dropped stale ICE candidate:', msg);
+            } else {
+                console.warn('Signaling error', e);
+            }
         }
     }
 
     async _flushIce(session) {
         const buffered = session.iceBuffer.splice(0);
         for (const candidate of buffered) {
+            if (isStaleCandidate(session.pc, candidate)) continue;
             try { await session.pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch { /* stale */ }
         }
     }

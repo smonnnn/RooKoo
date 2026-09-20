@@ -9,30 +9,66 @@
 
 import { NostrP2P } from './nostr-p2p.js';
 import { store } from './store.js';
-import { generateSecretKey, getPublicKey, nip19, bytesToHex, hexToBytes } from './nostr-deps.js';
+import { generateSecretKey, getPublicKey, bytesToHex, hexToBytes } from './nostr-deps.js';
 
 const FILE_CHUNK = 48 * 1024;
 const SEEN_MAX = 5000;
+
+// Public relays that are open (no auth / proof-of-work) and accept ephemeral
+// signaling events, probed from this machine. Overridable in Settings.
+const DEFAULT_RELAYS = [
+    'wss://relay.snort.social',
+    'wss://relay.primal.net',
+    'wss://nostr.mom',
+    'wss://nostr-pub.wellorder.net',
+];
+function resolveRelays() {
+    try {
+        const stored = JSON.parse(localStorage.getItem('nostr_p2p_relays') || 'null');
+        if (Array.isArray(stored) && stored.length) return stored;
+    } catch { /* fall through */ }
+    return DEFAULT_RELAYS;
+}
+
 const RELAYABLE = new Set([
-    'hello', 'peers', 'chat', 'chat_history', 'file_meta', 'file_req',
+    'hello', 'profile', 'peers', 'chat', 'chat_history', 'file_meta', 'file_req',
     'media_state', 'media_leave',
 ]);
 
-// CSS filters applied on a canvas, so the effect is baked into the outgoing
-// video and therefore visible to everyone — not just a local preview.
-const FILTERS = {
-    none: '',
-    grayscale: 'grayscale(1)',
-    sepia: 'sepia(.85)',
-    invert: 'invert(1)',
-    warm: 'sepia(.45) saturate(1.7) hue-rotate(-18deg)',
-    cool: 'sepia(.45) saturate(1.7) hue-rotate(160deg)',
-    vivid: 'saturate(1.7) contrast(1.12)',
-    bright: 'brightness(1.4) contrast(1.05)',
-    dark: 'brightness(.6) contrast(1.15)',
-    blur: 'blur(4px)',
-    pixelate: 'pixelate',
+// Content-aware background effects. These need per-pixel person/background
+// segmentation (MediaPipe selfie segmentation), composited on the canvas so
+// the effect is baked into the outgoing video — visible to everyone, not just
+// a local preview. They are applied to your camera only; screen shares bypass
+// the canvas entirely.
+const FILTER_LABELS = {
+    none: 'No effect',
+    blur: 'Blur background',
+    'blur-strong': 'Blur background (strong)',
+    pixelate: 'Pixelate background',
+    grayscale: 'Black & white background',
+    remove: 'Remove background',
+    'bg-blue': 'Blue background',
+    'bg-green': 'Green background',
+    'bg-white': 'White background',
+    'bg-warm': 'Warm background',
+    'bg-gradient': 'Gradient background',
 };
+const BACKGROUND_EFFECTS = new Set([
+    'blur', 'blur-strong', 'pixelate', 'grayscale', 'remove',
+    'bg-blue', 'bg-green', 'bg-white', 'bg-warm', 'bg-gradient',
+]);
+const SOLID_BG = {
+    remove: '#20262B',
+    'bg-blue': '#3B82F6',
+    'bg-green': '#22C55E',
+    'bg-white': '#FFFFFF',
+    'bg-warm': '#EDA35A',
+};
+// Pinned MediaPipe Tasks Vision build (loaded from CDN on first use).
+const MEDIAPIPE_VERSION = '0.10.14';
+const MEDIAPIPE_MODULE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}`;
+const MEDIAPIPE_WASM = `${MEDIAPIPE_MODULE}/wasm`;
+const MEDIAPIPE_MODEL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite';
 
 // ---------------------------------------------------------------- state ----
 const state = {
@@ -40,6 +76,8 @@ const state = {
     self_npub: null,
     username: null,
     users: {},            // npub -> {npub, username}
+    introducers: {},      // npub -> { via: npub|null, at }  (signed provenance)
+    joinedVia: null,      // the npub whose invite we used to enter the room
     seen: new Set(),
 };
 
@@ -53,9 +91,19 @@ const media = {
     ctx: null,
     pixelCanvas: null,
     pixelCtx: null,
+    personCanvas: null,
+    personCtx: null,
+    maskCanvas: null,
+    maskCtx: null,
+    maskImageData: null,
+    maskReady: false,
+    lastMaskAt: 0,
+    segmenter: null,
+    segmenterLoading: false,
     outVideoTrack: null,
     micOn: true,
     camOn: true,
+    mirror: true,         // mirrors the outgoing canvas (and thus the self-view)
     filter: 'none',
     peers: {},            // npub -> RTCPeerConnection
     peerState: {},        // npub -> {joined, mic, cam, filter, sharing}
@@ -168,10 +216,12 @@ async function handleMessage(npub, msg) {
 
     if (msg.username) rememberUser(from, msg.username);
     if (msg.peers) for (const p of msg.peers) addKnownPeer(p, false);
+    if (msg.joinedVia !== undefined) recordIntroducer(from, msg.joinedVia);
 
     switch (msg.type) {
         case 'hello':
-            addKnownPeer(from, true);
+        case 'profile':
+            addKnownPeer(from);
             renderPeople();
             break;
         case 'peers':
@@ -238,16 +288,9 @@ async function handleMessage(npub, msg) {
 function knownPeers() {
     return Array.from(state.p2p.peers).filter(p => p !== state.self_npub);
 }
-async function addKnownPeer(npub, persist = true) {
+async function addKnownPeer(npub) {
     if (!npub || npub === state.self_npub) return;
-    if (!state.p2p.peers.has(npub)) {
-        state.p2p.addPeer(npub);
-        const peers = JSON.parse(localStorage.getItem('rookoo_peers') || '[]');
-        if (!peers.includes(npub)) {
-            peers.push(npub);
-            localStorage.setItem('rookoo_peers', JSON.stringify(peers.slice(-200)));
-        }
-    }
+    if (!state.p2p.peers.has(npub)) state.p2p.addPeer(npub);
     renderPeople();
     updatePeerStatus();
 }
@@ -256,6 +299,30 @@ function rememberUser(npub, username) {
     const u = state.users[npub] || { npub };
     u.username = username || u.username;
     state.users[npub] = u;
+}
+// Signed join provenance: a peer's `hello`/`profile` is signature-verified by
+// the library, so `from` is authentic; it also carries the npub whose invite
+// that peer used. We can therefore draw the room's join tree from any member's
+// npub: e.g. "Bob joined via Alice".
+function recordIntroducer(npub, via) {
+    if (!npub || npub === state.self_npub) return;
+    const viaClean = (via && via !== npub) ? via : null;
+    const prev = state.introducers[npub];
+    if (!prev || (prev.via === null && viaClean)) {
+        state.introducers[npub] = { via: viaClean, at: Date.now() };
+    }
+    renderPeople();
+}
+function introducerLabel(npub) {
+    const via = state.introducers[npub]?.via;
+    if (via === undefined) return '';
+    if (via === null) return 'joined directly';
+    return 'joined via ' + nameOf(via);
+}
+function setJoinedVia(npub) {
+    if (!npub || npub === state.self_npub) return;
+    state.joinedVia = npub;
+    localStorage.setItem('rookoo_joined_via', npub);
 }
 function extractNpub(text) {
     if (!text) return null;
@@ -278,16 +345,9 @@ function setupLogin() {
         e.preventDefault();
         const name = document.getElementById('login-username').value.trim();
         if (!name) return;
-        let key = document.getElementById('login-key').value.trim();
-        try {
-            if (!key) key = bytesToHex(generateSecretKey());
-            else if (key.startsWith('nsec1')) key = bytesToHex(nip19.decode(key).data);
-            else if (!/^[0-9a-f]{64}$/i.test(key)) throw new Error('bad');
-            getPublicKey(hexToBytes(key));
-        } catch {
-            document.getElementById('login-error').textContent = 'Key must be an nsec… or 64-char hex string.';
-            return;
-        }
+        // Identities are always randomly generated — never user-supplied.
+        const key = bytesToHex(generateSecretKey());
+        getPublicKey(hexToBytes(key));
         localStorage.setItem('rookoo_sk', key);
         localStorage.setItem('rookoo_username', name);
         state.username = name;
@@ -300,9 +360,14 @@ function startApp(sk) {
     state.p2p = new NostrP2P(sk, {
         maxConnections: 12,
         open: true,
+        relays: resolveRelays(),
         onConnect: async (npub) => {
             addKnownPeer(npub);
-            sendDirect(npub, { type: 'hello', username: state.username, peers: knownPeers() });
+            // hello is signed and carries the introducer, so the receiver can
+            // verify both who we are and which npub we joined through.
+            sendDirect(npub, { type: 'hello', username: state.username, peers: knownPeers(), joinedVia: state.joinedVia });
+            // Flood our profile (incl. provenance) so the whole room converges.
+            gossip({ type: 'profile', username: state.username, peers: knownPeers(), joinedVia: state.joinedVia });
             if (chatLog.length) sendDirect(npub, { type: 'chat_history', messages: chatLog.slice(-40) });
             if (media.joined) {
                 sendDirect(npub, { type: 'media_state', mic: media.micOn, cam: media.camOn, filter: media.filter, sharing: !!media.screenStream });
@@ -325,11 +390,21 @@ function startApp(sk) {
     state.self_npub = state.p2p.npub;
     media.booted = true;
 
-    for (const p of JSON.parse(localStorage.getItem('rookoo_peers') || '[]')) state.p2p.addPeer(p);
+    // The room is entered by knowing anyone's npub. We remember the npub whose
+    // invite we used (our introducer) and reconnect to the room through them
+    // on future loads — no peer list to manage.
+    const savedVia = localStorage.getItem('rookoo_joined_via');
+    if (savedVia && savedVia !== state.self_npub) state.joinedVia = savedVia;
 
-    // Invite links: .../#npub1… — auto-add the inviter.
+    // Invite links: .../#npub1… — joining is immediate and needs no setup on
+    // the other side, because the library accepts unknown peers (open: true).
     const invited = extractNpub(location.hash.slice(1));
-    if (invited && invited !== state.self_npub) addKnownPeer(invited, true);
+    if (invited && invited !== state.self_npub) {
+        setJoinedVia(invited);
+        addKnownPeer(invited);
+    } else if (state.joinedVia) {
+        addKnownPeer(state.joinedVia);
+    }
 
     document.getElementById('app').hidden = false;
     buildUI();
@@ -351,8 +426,12 @@ function startApp(sk) {
 
 function tick() {
     updatePeerStatus();
+    heartbeatTick++;
+    // Periodic profile gossip keeps join-provenance and the peer set converged.
+    if (heartbeatTick % 12 === 0 && state.p2p.connections.size) {
+        gossip({ type: 'profile', username: state.username, peers: knownPeers(), joinedVia: state.joinedVia });
+    }
     if (media.joined) {
-        heartbeatTick++;
         if (heartbeatTick % 2 === 0) announceMedia();
         for (const npub of state.p2p.connections.keys()) {
             if (media.peerState[npub]?.joined && state.self_npub > npub && !media.peers[npub]) maybeOffer(npub);
@@ -398,12 +477,21 @@ function refreshTiles() {
     // Self always has a tile.
     ensureTile(state.self_npub);
 
+    // Only render remote tiles while we are in the call; after leaving, drop
+    // them and release their video element so no freeze-frame lingers.
     const present = new Set([state.self_npub]);
-    for (const [npub, st] of Object.entries(media.peerState)) {
-        if (st.joined) { ensureTile(npub); present.add(npub); }
+    if (media.joined) {
+        for (const [npub, st] of Object.entries(media.peerState)) {
+            if (st.joined) { ensureTile(npub); present.add(npub); }
+        }
     }
     for (const npub of Object.keys(tiles)) {
-        if (!present.has(npub)) { tiles[npub].remove(); delete tiles[npub]; }
+        if (!present.has(npub)) {
+            const v = tiles[npub].querySelector('video');
+            if (v) v.srcObject = null;
+            tiles[npub].remove();
+            delete tiles[npub];
+        }
     }
 
     for (const npub of present) {
@@ -453,7 +541,7 @@ function refreshTiles() {
         const link = location.origin + location.pathname + '#' + state.self_npub;
         empty.innerHTML = `<div class="box">
             <h3>No one else is here yet</h3>
-            <p class="muted">Click <strong>Join</strong> to turn on your camera, then send this invite link to a friend. They can also paste your peer ID with <strong>Add peer</strong>.</p>
+            <p class="muted">Click <strong>Join</strong> to turn on your camera, then share this link or your npub with anyone. Anyone who has the npub of <em>anyone in the room</em> can join — no setup on your side.</p>
             <code>${escapeHtml(link)}</code>
             <p class="muted small">Your peer ID: ${escapeHtml(state.self_npub)}</p>
         </div>`;
@@ -467,19 +555,23 @@ function renderPeople() {
     if (!list) return;
     const conns = state.p2p ? state.p2p.connections : new Map();
     const rows = [];
+    const selfIntro = state.joinedVia ? 'joined via ' + nameOf(state.joinedVia) : 'room seed';
+    const selfSub = (media.joined ? (media.micOn ? 'mic on' : 'muted') + ' · ' + (media.camOn ? 'camera on' : 'camera off') : 'not in call') + ' · ' + selfIntro;
     rows.push(`<div class="person">
         <div class="av" style="background:linear-gradient(135deg,#4f8cff,#8f5cff)">${escapeHtml(initials(state.self_npub))}</div>
         <div class="info"><div>${escapeHtml(nameOf(state.self_npub))} (you)</div>
-        <div class="sub">${media.joined ? (media.micOn ? 'mic on' : 'muted') + ' · ' + (media.camOn ? 'camera on' : 'camera off') : 'not in call'}</div></div>
+        <div class="sub">${escapeHtml(selfSub)}</div></div>
         <div class="dot ${conns.size ? 'on' : ''}"></div></div>`);
 
     const npubs = new Set([...conns.keys(), ...Object.keys(state.users)]);
     for (const npub of npubs) {
         if (npub === state.self_npub) continue;
         const st = media.peerState[npub];
-        const sub = st?.joined
+        let sub = st?.joined
             ? (st.mic ? 'mic on' : 'muted') + ' · ' + (st.cam ? 'camera on' : 'camera off')
             : (conns.has(npub) ? 'connected' : 'offline');
+        const intro = introducerLabel(npub);
+        if (intro) sub += ' · ' + intro;
         rows.push(`<div class="person">
             <div class="av">${escapeHtml(initials(npub))}</div>
             <div class="info"><div>${escapeHtml(nameOf(npub))}</div><div class="sub">${escapeHtml(sub)}</div></div>
@@ -675,7 +767,7 @@ async function startMedia() {
     media.camOn = hasVideo;
 
     if (hasVideo) {
-        // Canvas pipeline: source camera -> filtered canvas -> outgoing track.
+        // Canvas pipeline: source camera -> effects canvas -> outgoing track.
         const v = document.createElement('video');
         v.muted = true;
         v.playsInline = true;
@@ -687,10 +779,27 @@ async function startMedia() {
         media.canvas.width = 1280;
         media.canvas.height = 720;
         media.ctx = media.canvas.getContext('2d', { alpha: false });
+
+        // Downscaled buffer used to pixelate the background.
         media.pixelCanvas = document.createElement('canvas');
-        media.pixelCanvas.width = 96;
-        media.pixelCanvas.height = 54;
+        media.pixelCanvas.width = 80;
+        media.pixelCanvas.height = 45;
         media.pixelCtx = media.pixelCanvas.getContext('2d');
+
+        // Foreground layer: camera frame masked to the person silhouette.
+        media.personCanvas = document.createElement('canvas');
+        media.personCanvas.width = media.canvas.width;
+        media.personCanvas.height = media.canvas.height;
+        media.personCtx = media.personCanvas.getContext('2d');
+
+        // Low-res segmentation mask (filled in as MediaPipe produces masks).
+        media.maskCanvas = document.createElement('canvas');
+        media.maskCanvas.width = 256;
+        media.maskCanvas.height = 256;
+        media.maskCtx = media.maskCanvas.getContext('2d');
+        media.maskImageData = media.maskCtx.createImageData(256, 256);
+        media.maskReady = false;
+        media.lastMaskAt = 0;
 
         const captured = media.canvas.captureStream(30);
         media.outVideoTrack = captured.getVideoTracks()[0];
@@ -701,20 +810,161 @@ async function startMedia() {
     }
 }
 
+// ---------------------------------------------------- background effects ---
+// Loads the selfie segmentation model on first use. Kept out of the initial
+// bundle: if it can't be fetched (offline), the caller falls back to no effect.
+async function ensureSegmenter() {
+    if (media.segmenter) return true;
+    if (media.segmenterLoading) return false;
+    media.segmenterLoading = true;
+    toast('Loading background effects…', 6000);
+    try {
+        const vision = await import(/* @vite-ignore */ MEDIAPIPE_MODULE);
+        const fileset = await vision.FilesetResolver.forVisionTasks(MEDIAPIPE_WASM);
+        const options = (delegate) => ({
+            baseOptions: { modelAssetPath: MEDIAPIPE_MODEL, delegate },
+            runningMode: 'VIDEO',
+            outputConfidenceMasks: true,
+            outputCategoryMask: false,
+        });
+        try {
+            media.segmenter = await vision.ImageSegmenter.createFromOptions(fileset, options('GPU'));
+        } catch {
+            media.segmenter = await vision.ImageSegmenter.createFromOptions(fileset, options('CPU'));
+        }
+        media.segmenterLoading = false;
+        toast('Background effects ready');
+        return true;
+    } catch (e) {
+        media.segmenterLoading = false;
+        console.warn('Background effects unavailable:', e);
+        toast('Background effects unavailable (offline?)');
+        return false;
+    }
+}
+
+// Ask MediaPipe for a fresh mask, throttled to ~15 fps to leave CPU for the
+// call. The callback fills maskCanvas: opaque where the person is, so it can
+// be used as an alpha matte via `destination-in`.
+function updateMask(now) {
+    if (!media.segmenter || !media.sourceVideo || media.sourceVideo.readyState < 2) return;
+    if (now - media.lastMaskAt < 66) return;
+    media.lastMaskAt = now;
+    try {
+        media.segmenter.segmentForVideo(media.sourceVideo, now, (result) => {
+            const mask = result?.confidenceMasks?.[0];
+            if (mask) {
+                const data = mask.getAsFloat32Array();
+                const mw = mask.width || media.maskCanvas.width;
+                const mh = mask.height || media.maskCanvas.height;
+                if (media.maskCanvas.width !== mw || media.maskCanvas.height !== mh) {
+                    media.maskCanvas.width = mw;
+                    media.maskCanvas.height = mh;
+                    media.maskImageData = media.maskCtx.createImageData(mw, mh);
+                }
+                const px = media.maskImageData.data;
+                for (let i = 0; i < mw * mh; i++) {
+                    const o = i * 4;
+                    px[o] = 255; px[o + 1] = 255; px[o + 2] = 255;
+                    // Soft ramp between two confidence thresholds gives a
+                    // feathered matte instead of a hard cut-out edge.
+                    let a = (data[i] - 0.3) / 0.3;
+                    a = a < 0 ? 0 : a > 1 ? 1 : a;
+                    px[o + 3] = (a * 255) | 0;
+                }
+                media.maskCtx.putImageData(media.maskImageData, 0, 0);
+                media.maskReady = true;
+            }
+            try { result?.close?.(); } catch { /* ignore */ }
+        });
+    } catch { /* transient MediaPipe error; keep last mask */ }
+}
+
+// Draws a source onto a canvas, applying the mirror transform when enabled.
+// Mirroring happens here (in the outgoing pipeline) so remote peers see the
+// same left/right orientation as the local self-view.
+function drawSource(dst, source, w, h) {
+    if (media.mirror) {
+        dst.save();
+        dst.translate(w, 0);
+        dst.scale(-1, 1);
+        dst.drawImage(source, 0, 0, w, h);
+        dst.restore();
+    } else {
+        dst.drawImage(source, 0, 0, w, h);
+    }
+}
+
+function drawPixelatedBackground(ctx, video, w, h) {
+    const pw = media.pixelCanvas.width, ph = media.pixelCanvas.height;
+    media.pixelCtx.clearRect(0, 0, pw, ph);
+    drawSource(media.pixelCtx, video, pw, ph);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(media.pixelCanvas, 0, 0, w, h);
+    ctx.imageSmoothingEnabled = true;
+}
+
+function paintBackground(ctx, video, w, h) {
+    const effect = media.filter;
+    if (effect === 'blur' || effect === 'blur-strong') {
+        ctx.filter = effect === 'blur' ? 'blur(10px)' : 'blur(22px)';
+        drawSource(ctx, video, w, h);
+        ctx.filter = 'none';
+    } else if (effect === 'pixelate') {
+        drawPixelatedBackground(ctx, video, w, h);
+    } else if (effect === 'grayscale') {
+        ctx.filter = 'grayscale(1)';
+        drawSource(ctx, video, w, h);
+        ctx.filter = 'none';
+    } else if (effect === 'bg-gradient') {
+        const g = ctx.createLinearGradient(0, 0, w, h);
+        g.addColorStop(0, '#7B6B8D');
+        g.addColorStop(1, '#EDA35A');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, w, h);
+    } else {
+        ctx.fillStyle = SOLID_BG[effect] || '#20262B';
+        ctx.fillRect(0, 0, w, h);
+    }
+}
+
+function drawWithMask(video, w, h) {
+    const { ctx } = media;
+    paintBackground(ctx, video, w, h);
+
+    // Cut the person out of the camera frame using the mask as an alpha matte.
+    const pctx = media.personCtx;
+    pctx.globalCompositeOperation = 'source-over';
+    pctx.filter = 'none';
+    pctx.clearRect(0, 0, w, h);
+    drawSource(pctx, video, w, h);
+    pctx.globalCompositeOperation = 'destination-in';
+    // A slight blur feathers the matte edge so the cut-out isn't jagged.
+    pctx.filter = 'blur(2px)';
+    pctx.imageSmoothingEnabled = true;
+    drawSource(pctx, media.maskCanvas, w, h);
+    pctx.filter = 'none';
+    pctx.globalCompositeOperation = 'source-over';
+
+    ctx.filter = 'none';
+    ctx.drawImage(media.personCanvas, 0, 0);
+}
+
 function drawLoop() {
     if (!media.ctx) return;
     const { ctx, sourceVideo, canvas } = media;
-    if (sourceVideo.readyState >= 2) {
-        const f = FILTERS[media.filter] || '';
-        if (f === 'pixelate') {
-            media.pixelCtx.drawImage(sourceVideo, 0, 0, media.pixelCanvas.width, media.pixelCanvas.height);
-            ctx.imageSmoothingEnabled = false;
-            ctx.filter = 'none';
-            ctx.drawImage(media.pixelCanvas, 0, 0, canvas.width, canvas.height);
-            ctx.imageSmoothingEnabled = true;
+    const w = canvas.width, h = canvas.height;
+    // Screen share bypasses this canvas entirely; skip the work.
+    if (!media.screenStream && sourceVideo.readyState >= 2) {
+        const effect = media.filter;
+        const isBg = BACKGROUND_EFFECTS.has(effect);
+        if (isBg && media.segmenter && media.maskReady) {
+            updateMask(performance.now());
+            drawWithMask(sourceVideo, w, h);
         } else {
-            ctx.filter = f || 'none';
-            ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+            if (isBg && media.segmenter) updateMask(performance.now());
+            ctx.filter = 'none';
+            drawSource(ctx, sourceVideo, w, h);
         }
     }
     rafId = requestAnimationFrame(drawLoop);
@@ -758,6 +1008,12 @@ function leaveMeeting() {
     media.sourceVideo = null;
     media.canvas = null;
     media.ctx = null;
+    media.personCanvas = null;
+    media.personCtx = null;
+    media.maskCanvas = null;
+    media.maskCtx = null;
+    media.maskImageData = null;
+    media.maskReady = false;
     media.joined = false;
     document.getElementById('join-btn').hidden = false;
     document.getElementById('call-controls').hidden = true;
@@ -911,10 +1167,11 @@ function setCam(on) {
 }
 
 function setFilter(name) {
-    if (!(name in FILTERS)) name = 'none';
+    if (!(name in FILTER_LABELS)) name = 'none';
     media.filter = name;
+    if (BACKGROUND_EFFECTS.has(name)) ensureSegmenter();
     announceMedia();
-    toast('Filter: ' + document.querySelector(`#filter-select option[value="${name}"]`)?.textContent);
+    toast(FILTER_LABELS[name]);
 }
 
 async function toggleScreen() {
@@ -981,8 +1238,8 @@ function buildUI() {
     document.getElementById('screen-btn').addEventListener('click', toggleScreen);
     document.getElementById('filter-select').addEventListener('change', (e) => setFilter(e.target.value));
     document.getElementById('mirror-btn').addEventListener('click', () => {
-        const self = tiles[state.self_npub];
-        if (self) self.classList.toggle('mirror-off');
+        media.mirror = !media.mirror;
+        toast(media.mirror ? 'Mirrored (everyone sees it)' : 'Not mirrored');
     });
 
     document.getElementById('chat-form').addEventListener('submit', (e) => {
@@ -1003,8 +1260,14 @@ function buildUI() {
             document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === tab.dataset.tab));
         });
     });
+    const sidebarEl = document.getElementById('sidebar');
+    const mobileMq = window.matchMedia('(max-width: 860px)');
+    // Desktop starts with the panel open; mobile starts with it hidden.
+    const applySidebarDefault = () => sidebarEl.classList.toggle('collapsed', mobileMq.matches);
+    applySidebarDefault();
+    mobileMq.addEventListener?.('change', applySidebarDefault);
     document.getElementById('sidebar-toggle').addEventListener('click', () => {
-        document.getElementById('sidebar').classList.toggle('open');
+        sidebarEl.classList.toggle('collapsed');
     });
 
     document.getElementById('copy-invite').addEventListener('click', async () => {
@@ -1020,11 +1283,12 @@ function buildUI() {
         const val = document.getElementById('add-peer-input').value;
         const npub = extractNpub(val);
         if (!npub) { toast('That does not look like an npub or invite link'); return; }
-        if (npub === state.self_npub) { toast('That is your own peer ID'); return; }
-        addKnownPeer(npub, true);
+        if (npub === state.self_npub) { toast('That is your own npub'); return; }
+        setJoinedVia(npub);
+        addKnownPeer(npub);
         dialog.close();
         document.getElementById('add-peer-input').value = '';
-        toast('Connecting to ' + shortNpub(npub) + '…');
+        toast('Joining the room through ' + shortNpub(npub) + '…');
     });
     document.getElementById('add-peer-cancel')?.addEventListener('click', () => dialog.close());
 
@@ -1037,6 +1301,11 @@ function buildUI() {
         settingsDialog.showModal();
     });
     document.getElementById('settings-cancel').addEventListener('click', () => settingsDialog.close());
+    document.getElementById('settings-identity').addEventListener('click', () => {
+        // Always-random identities: mint a brand new one on demand.
+        localStorage.setItem('rookoo_sk', bytesToHex(generateSecretKey()));
+        location.reload();
+    });
     document.getElementById('settings-form').addEventListener('submit', (e) => {
         e.preventDefault();
         const urls = document.getElementById('relays-input').value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
