@@ -54,7 +54,18 @@
             </div>
 
             <aside id="live-side">
-                <section class="card">
+                <section class="card" id="watch-card">
+                    <h3>Watch</h3>
+                    <p class="muted small">Open someone's live link, or paste the streamer's ID. You'll be placed in their tree automatically and can help relay to others.</p>
+                    <div class="row">
+                        <input id="watch-input" type="text" placeholder="Live link or streamer ID…" spellcheck="false">
+                        <button id="watch-btn" class="btn primary">Watch</button>
+                        <button id="leave-btn" class="btn" disabled>Leave</button>
+                    </div>
+                    <label class="check"><input type="checkbox" id="relay-check" checked> Help relay to other viewers</label>
+                </section>
+
+                <section class="card" id="broadcast-card">
                     <h3>Broadcast</h3>
                     <p class="muted small">Encode your camera with WebCodecs and stream it to the network. Every chunk is signed with your key; each viewer verifies it and can forward it on — a tree, so each node only sends a few copies.</p>
                     <label class="muted small" for="camera-select">Video source</label>
@@ -74,17 +85,6 @@
                         <code id="share-link"></code>
                         <button id="copy-link" class="btn">Copy</button>
                     </div>
-                </section>
-
-                <section class="card">
-                    <h3>Watch</h3>
-                    <p class="muted small">Open someone's live link, or paste the streamer's ID. You'll be placed in their tree automatically and can help relay to others.</p>
-                    <div class="row">
-                        <input id="watch-input" type="text" placeholder="Live link or streamer ID…" spellcheck="false">
-                        <button id="watch-btn" class="btn primary">Watch</button>
-                        <button id="leave-btn" class="btn" disabled>Leave</button>
-                    </div>
-                    <label class="check"><input type="checkbox" id="relay-check" checked> Help relay to other viewers</label>
                 </section>
 
                 <section class="card">

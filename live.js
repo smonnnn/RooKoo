@@ -423,17 +423,37 @@ function iceComplete(pc, maxMs = 6000) {
 }
 
 // ---------------------------------------------------------------- streamer --
-let encoder = null, reader = null, localStream = null, localScreen = null, encodeCfg = null, frameCount = 0;
+let encoder = null, localStream = null, localScreen = null, encodeCfg = null, cameraCfg = null, frameCount = 0;
 
-async function pickCodec() {
-    const candidates = [{ codec: 'vp09.00.10.08' }, { codec: 'vp8' }];
-    for (const c of candidates) {
-        const cfg = { ...c, width: 640, height: 360, bitrate: 1_200_000, framerate: 30, latencyMode: 'realtime' };
+// Pick an even width/height preserving the source aspect, long side <= cap.
+function fitDims(vw, vh, cap) {
+    const long = Math.max(vw || cap, vh || Math.round(cap * 9 / 16));
+    const scale = Math.min(1, cap / long);
+    return {
+        w: Math.max(2, Math.round((vw * scale) / 2) * 2),
+        h: Math.max(2, Math.round((vh * scale) / 2) * 2),
+    };
+}
+
+async function pickCodec(width, height) {
+    // H.264 first for the widest support (Safari encodes H.264 only), then VP9/VP8.
+    const candidates = [
+        'avc1.640028', 'avc1.4d0028', 'avc1.42E01E',
+        'vp09.00.10.08', 'vp8',
+    ];
+    const bitrate = Math.min(2_500_000, Math.max(600_000, Math.round(width * height * 2.2)));
+    for (const codec of candidates) {
+        const cfg = { codec, width, height, bitrate, framerate: 30, latencyMode: 'realtime' };
         let t;
         try { t = new VideoEncoder({ output: () => {}, error: () => {} }); await t.configure(cfg); t.close(); return cfg; }
         catch { try { t?.close(); } catch { /* ignore */ } }
     }
     return null;
+}
+
+// Source dimensions (camera/screen) from the live video element.
+function sourceDims() {
+    return { w: localVideo.videoWidth || 1280, h: localVideo.videoHeight || 720 };
 }
 
 // Video input constraints for the selected source (or the default camera).
@@ -469,15 +489,21 @@ async function switchCamera(deviceId) {
         if (localStream) localStream.getTracks().forEach((t) => t.stop());
         localStream = s;
         localVideo.srcObject = s;
-        startReader(s.getVideoTracks()[0]);
+        await localVideo.play().catch(() => {});
+        if (localVideo.videoWidth) {
+            const d = fitDims(localVideo.videoWidth, localVideo.videoHeight, 720);
+            const cfg = await pickCodec(d.w, d.h);
+            if (cfg && encoder) { encodeCfg = cfg; cameraCfg = cfg; await encoder.configure(cfg).catch(() => {}); }
+        }
+        startReader();
         L.forceKeyframe = true;
         log('video source switched');
     } catch (e) { log('source switch failed: ' + e.message); }
 }
 
 async function goLive() {
-    if (typeof MediaStreamTrackProcessor === 'undefined' || typeof VideoEncoder === 'undefined') {
-        log('WebCodecs not supported — use Chrome or Edge');
+    if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
+        log('This browser can’t encode video (WebCodecs needed: Chrome/Edge/Android).');
         return;
     }
     try {
@@ -491,8 +517,12 @@ async function goLive() {
     stageVideo.srcObject = localStream;
     stageVideo.hidden = false;
     stageHint.style.display = 'none';
-    const cfg = await pickCodec();
-    if (!cfg) { log('no VP9/VP8 encoder support'); return; }
+    await localVideo.play().catch(() => {});
+    if (!localVideo.videoWidth) await new Promise((r) => localVideo.addEventListener('loadedmetadata', r, { once: true }));
+    const d = fitDims(localVideo.videoWidth || 1280, localVideo.videoHeight || 720, 720);
+    const cfg = await pickCodec(d.w, d.h);
+    if (!cfg) { log('no supported video encoder (VP8/VP9/H.264)'); return; }
+    log('encoding ' + cfg.codec + ' ' + cfg.width + '×' + cfg.height);
 
     L.mode = 'streamer';
     L.streamerNpub = L.npub;
@@ -504,6 +534,8 @@ async function goLive() {
     startTick();
     updateStreamInfoUI();
     setLiveBadge(true);
+    setControlsEnabled(true);
+    vcPlay.hidden = true; // pausing your own outgoing stream isn't meaningful
     setStatus('live');
     $('go-live').disabled = true;
     $('stop-live').disabled = false;
@@ -515,7 +547,12 @@ async function goLive() {
         output: (chunk, metadata) => {
             if (metadata?.decoderConfig) {
                 const c = { ...metadata.decoderConfig };
-                if (c.description instanceof Uint8Array) c.description = Array.from(c.description);
+                // description may be a Uint8Array, ArrayBuffer or view — make it
+                // a plain array so it survives JSON (H.264 needs it).
+                if (c.description) {
+                    if (c.description instanceof ArrayBuffer) c.description = Array.from(new Uint8Array(c.description));
+                    else if (ArrayBuffer.isView(c.description)) c.description = Array.from(new Uint8Array(c.description.buffer, c.description.byteOffset, c.description.byteLength));
+                }
                 L.cachedConfig = PROTO.packConfig(c);
                 forwardToChildren(L.cachedConfig);
             }
@@ -534,36 +571,77 @@ async function goLive() {
         error: (e) => log('encoder error: ' + e.message),
     });
     encodeCfg = cfg;
+    cameraCfg = cfg;
     await encoder.configure(cfg);
-    startReader(localStream.getVideoTracks()[0]);
+    startReader();
 }
 
-// Feed the encoder from a given video track (camera or screen). Switching the
-// reader keeps the same encoder; a keyframe is forced so viewers resync.
-function startReader(track) {
-    if (reader) { reader.cancel().catch(() => {}); reader = null; }
+// Feed the encoder from the current source. Prefer MediaStreamTrackProcessor
+// (zero-copy, lowest latency) where it exists (Chrome/Edge); otherwise fall
+// back to a canvas + VideoFrame loop (Safari), which is a bit heavier but the
+// only option there.
+let readerGen = 0;
+function startReader() {
+    if (typeof MediaStreamTrackProcessor !== 'undefined') startProcessorReader();
+    else startCanvasReader();
+}
+
+function encodeFrameOrDrop(frame, n) {
+    if (encoder?.state !== 'configured') { try { frame.close(); } catch { /* ignore */ } return; }
+    const key = L.forceKeyframe || n % KEYFRAME_INTERVAL === 0;
+    if (key) L.forceKeyframe = false;
+    if (key || encoder.encodeQueueSize <= 6) {
+        try { encoder.encode(frame, key ? { keyFrame: true } : undefined); } catch { /* ignore */ }
+    }
+    try { frame.close(); } catch { /* ignore */ }
+}
+
+function startProcessorReader() {
+    const gen = ++readerGen;
+    const stream = localVideo.srcObject;
+    const track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+    if (!track) return;
     const processor = new MediaStreamTrackProcessor({ track });
-    reader = processor.readable.getReader();
+    const reader = processor.readable.getReader();
+    let n = frameCount;
     (async () => {
         try {
-            while (true) {
+            while (gen === readerGen) {
                 const { done, value: frame } = await reader.read();
                 if (done) break;
-                if (encoder?.state === 'configured') {
-                    frameCount++;
-                    const key = L.forceKeyframe || frameCount % KEYFRAME_INTERVAL === 0;
-                    if (key) {
-                        L.forceKeyframe = false;
-                        try { encoder.encode(frame, { keyFrame: true }); } catch { /* ignore */ }
-                    } else if (encoder.encodeQueueSize <= 6) {
-                        try { encoder.encode(frame); } catch { /* ignore */ }
-                    }
-                    // else: the encoder is behind — drop this frame to stay real-time
-                }
-                frame.close();
+                n++; frameCount = n;
+                encodeFrameOrDrop(frame, n);
             }
-        } catch (e) { if (e.name !== 'AbortError') console.warn(e); }
+        } catch (e) { if (e.name !== 'AbortError') console.warn('[live] reader', e); }
     })();
+}
+
+function startCanvasReader() {
+    const gen = ++readerGen;
+    const src = localVideo;
+    const cvs = document.createElement('canvas');
+    const c = cvs.getContext('2d', { alpha: false });
+    let n = frameCount;
+    const schedule = () => {
+        if (gen !== readerGen) return;
+        if (typeof src.requestVideoFrameCallback === 'function') src.requestVideoFrameCallback(step);
+        else setTimeout(step, 1000 / 30);
+    };
+    const step = () => {
+        if (gen !== readerGen) return;
+        if (encoder?.state === 'configured' && encodeCfg && src.videoWidth) {
+            if (cvs.width !== encodeCfg.width || cvs.height !== encodeCfg.height) {
+                cvs.width = encodeCfg.width;
+                cvs.height = encodeCfg.height;
+            }
+            try { c.drawImage(src, 0, 0, cvs.width, cvs.height); } catch { /* not ready */ }
+            n++; frameCount = n;
+            try { encodeFrameOrDrop(new VideoFrame(cvs, { timestamp: Math.round(performance.now() * 1000) }), n); }
+            catch { /* ignore */ }
+        }
+        schedule();
+    };
+    schedule();
 }
 
 // Broadcast the screen instead of the camera. The signed-chunk protocol is
@@ -579,8 +657,13 @@ async function shareScreen() {
     track.onended = () => stopScreenShare();
     localVideo.srcObject = localScreen;
     stageVideo.srcObject = localScreen;
-    try { await encoder.configure({ ...encodeCfg, width: 1280, height: 720 }); } catch { /* keep current */ }
-    startReader(track);
+    await localVideo.play().catch(() => {});
+    if (!localVideo.videoWidth) await new Promise((r) => localVideo.addEventListener('loadedmetadata', r, { once: true }));
+    const sd = localScreen.getVideoTracks()[0].getSettings?.() || {};
+    const d = fitDims(sd.width || localVideo.videoWidth || 1280, sd.height || localVideo.videoHeight || 720, 1280);
+    const cfg = { ...encodeCfg, width: d.w, height: d.h };
+    try { await encoder.configure(cfg); encodeCfg = cfg; } catch { /* keep current */ }
+    startReader();
     L.forceKeyframe = true;
     $('screen-live').textContent = 'Stop screen';
     $('screen-live').classList.add('off');
@@ -597,8 +680,9 @@ async function stopScreenShare() {
     if (L.mode === 'streamer' && encoder && localStream) {
         localVideo.srcObject = localStream;
         stageVideo.srcObject = localStream;
-        try { await encoder.configure(encodeCfg); } catch { /* ignore */ }
-        startReader(localStream.getVideoTracks()[0]);
+        const cfg = cameraCfg || encodeCfg;
+        try { await encoder.configure(cfg); encodeCfg = cfg; } catch { /* ignore */ }
+        startReader();
         L.forceKeyframe = true;
     }
     const btn = $('screen-live');
@@ -607,7 +691,7 @@ async function stopScreenShare() {
 }
 
 function stopLive() {
-    if (reader) { reader.cancel().catch(() => {}); reader = null; }
+    readerGen++;
     if (localScreen) { localScreen.getTracks().forEach((t) => t.stop()); localScreen = null; }
     if (encoder) { try { encoder.close(); } catch { /* ignore */ } encoder = null; }
     if (localStream) { localStream.getTracks().forEach((t) => t.stop()); localStream = null; }
@@ -641,6 +725,7 @@ function stopLive() {
     updateStreamInfoUI();
     setLiveBadge(false);
     setControlsEnabled(false);
+    vcPlay.hidden = false;
 }
 
 function showShareLink() {
@@ -744,6 +829,7 @@ function clearVideo(hint) {
     L.paused = false;
     setControlsEnabled(false);
     setLiveBadge(false);
+    vcPlay.hidden = false;
     vcPlay.textContent = '⏸';
     vcPlay.title = 'Pause (keeps relaying)';
     if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
@@ -921,7 +1007,8 @@ $('privacy-close').addEventListener('click', () => {
 // Video controls. Pausing only freezes the picture; packets keep flowing to
 // downstream viewers. Resuming requests a fresh keyframe.
 const vcPlay = $('vc-play'), vcFs = $('vc-fs'), vcPip = $('vc-pip'), vcLive = $('vc-live');
-const pipSupported = 'pictureInPictureEnabled' in document && document.pictureInPictureEnabled;
+const pipSupported = ('pictureInPictureEnabled' in document && document.pictureInPictureEnabled)
+    || ('webkitSetPresentationMode' in HTMLVideoElement.prototype);
 if (pipSupported) vcPip.hidden = false;
 function setControlsEnabled(on) {
     vcPlay.disabled = !on;
@@ -938,13 +1025,27 @@ vcPlay.addEventListener('click', () => {
     vcPlay.title = L.paused ? 'Resume' : 'Pause (keeps relaying)';
     if (!L.paused) { L.hasKeyframe = false; requestKeyframeUpstream(); }
 });
+function activeVideoEl() { return stageVideo.hidden ? remoteCanvas : stageVideo; }
 vcFs.addEventListener('click', () => {
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    else $('live-stage').requestFullscreen?.().catch(() => {});
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fsEl) {
+        (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+        return;
+    }
+    const stage = $('live-stage');
+    const req = stage.requestFullscreen || stage.webkitRequestFullscreen;
+    if (req) { req.call(stage); return; }
+    // iOS has no element fullscreen — use the native video player instead.
+    const v = activeVideoEl();
+    if (typeof v.webkitEnterFullscreen === 'function') { try { v.webkitEnterFullscreen(); } catch { /* ignore */ } }
 });
 vcPip.addEventListener('click', () => {
-    if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
-    else remoteCanvas.requestPictureInPicture?.().catch(() => {});
+    const el = activeVideoEl();
+    if (document.pictureInPictureElement) { document.exitPictureInPicture?.().catch(() => {}); return; }
+    if (typeof el.requestPictureInPicture === 'function') el.requestPictureInPicture().catch(() => {});
+    else if (typeof el.webkitSetPresentationMode === 'function') {
+        el.webkitSetPresentationMode(el.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture');
+    }
 });
 
 $('go-live').addEventListener('click', goLive);
@@ -958,12 +1059,21 @@ listCameras();
 
 // WebCodecs capability check (Chrome/Edge and Android Chrome; iOS Safari lacks
 // it). Disable the parts that can't work so phones still make sense.
-const canEncode = typeof MediaStreamTrackProcessor !== 'undefined' && typeof VideoEncoder !== 'undefined';
+const canEncode = typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined';
 const canDecode = typeof VideoDecoder !== 'undefined';
 if (!canEncode) $('go-live').disabled = true;
 if (!canDecode) {
     $('watch-btn').disabled = true;
     stageHint.textContent = 'This browser can’t play the stream — WebCodecs is needed (Chrome/Edge/Android).';
+}
+// Replace the parts this browser can't do with an explanation (no popups).
+if (!canEncode) {
+    $('broadcast-card').innerHTML = '<h3>Broadcast</h3>'
+        + '<p class="muted small">Broadcasting isn’t supported in this browser: it needs WebCodecs video encoding, which is available in <b>Chrome, Edge and Android Chrome</b> but not in iOS Safari. You can still watch streams and relay them.</p>';
+}
+if (!canDecode) {
+    $('watch-card').innerHTML = '<h3>Watch</h3>'
+        + '<p class="muted small">Watching isn’t supported in this browser: it needs WebCodecs video decoding (Chrome, Edge or Android Chrome).</p>';
 }
 $('stop-live').addEventListener('click', stopLive);
 $('watch-btn').addEventListener('click', () => {

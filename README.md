@@ -127,9 +127,11 @@ How it works:
   signaling for the streaming data channels; the encoded media flows over
   dedicated WebRTC data channels.
 
-Requirements & limits: WebCodecs (`MediaStreamTrackProcessor`, `VideoEncoder`)
-is currently Chrome/Edge (desktop and Android). The stream is **video-only**.
-A dead upstream triggers automatic reconnection attempts.
+Requirements & limits: WebCodecs (`VideoEncoder`/`VideoDecoder`) is needed;
+it's in Chrome, Edge and Android Chrome, and (H.264 via a canvas fallback) in
+recent Safari. Where a browser can't encode/decode, the Broadcast/Watch panel
+says so instead of failing silently. The stream is **video-only**, and a dead
+upstream triggers automatic reconnection attempts.
 
 ## Relays and NAT traversal
 
