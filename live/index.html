@@ -56,12 +56,17 @@
                 <section class="card">
                     <h3>Broadcast</h3>
                     <p class="muted small">Encode your camera with WebCodecs and stream it to the network. Every chunk is signed with your key; each viewer verifies it and can forward it on — a tree, so each node only sends a few copies.</p>
+                    <label class="muted small" for="camera-select">Video source</label>
+                    <select id="camera-select" title="Pick a camera or OBS Virtual Camera">
+                        <option value="">Default camera</option>
+                    </select>
                     <input id="stream-title" type="text" placeholder="Stream title" maxlength="80">
                     <div class="row-btns">
                         <button id="go-live" class="btn primary">Go live</button>
                         <button id="screen-live" class="btn" disabled>Share screen</button>
                         <button id="stop-live" class="btn danger" disabled>Stop</button>
                     </div>
+                    <p class="muted small" id="obs-hint">Using OBS? Start <b>Virtual Camera</b> in OBS, then pick it above (refresh by leaving and reopening this tab). You can also share the OBS window with <b>Share screen</b>.</p>
                     <video id="local-video" autoplay muted playsinline hidden></video>
                     <div id="share-row" class="share-row" hidden>
                         <span class="muted small">Your live link:</span>

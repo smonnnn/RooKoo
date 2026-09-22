@@ -152,6 +152,7 @@ const L = {
     lastInfoAt: 0,
     tick: null,
     paused: false,
+    deviceId: null,
 };
 
 function log(...a) { $('live-log').textContent = a.join(' '); console.log('[live]', ...a); }
@@ -412,15 +413,55 @@ async function pickCodec() {
     return null;
 }
 
+// Video input constraints for the selected source (or the default camera).
+function videoConstraints() {
+    const base = { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 30 } };
+    return L.deviceId ? { deviceId: { exact: L.deviceId }, ...base } : base;
+}
+
+// List video inputs — including "OBS Virtual Camera" once OBS is running it.
+async function listCameras() {
+    const sel = $('camera-select');
+    if (!sel || !navigator.mediaDevices?.enumerateDevices) return;
+    let devices = [];
+    try { devices = await navigator.mediaDevices.enumerateDevices(); } catch { return; }
+    const cams = devices.filter((d) => d.kind === 'videoinput');
+    const current = L.deviceId || sel.value || '';
+    sel.innerHTML = '<option value="">Default camera</option>';
+    cams.forEach((d, i) => {
+        const o = document.createElement('option');
+        o.value = d.deviceId;
+        o.textContent = d.label || ('Camera ' + (i + 1));
+        sel.appendChild(o);
+    });
+    if (current && [...sel.options].some((o) => o.value === current)) sel.value = current;
+    else sel.value = '';
+}
+
+// Swap the camera while live (keeps the encoder and viewers).
+async function switchCamera(deviceId) {
+    if (L.mode !== 'streamer' || localScreen) return;
+    try {
+        const s = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(), audio: false });
+        if (localStream) localStream.getTracks().forEach((t) => t.stop());
+        localStream = s;
+        localVideo.srcObject = s;
+        startReader(s.getVideoTracks()[0]);
+        L.forceKeyframe = true;
+        log('video source switched');
+    } catch (e) { log('source switch failed: ' + e.message); }
+}
+
 async function goLive() {
     if (typeof MediaStreamTrackProcessor === 'undefined' || typeof VideoEncoder === 'undefined') {
         log('WebCodecs not supported — use Chrome or Edge');
         return;
     }
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 30 } }, audio: false });
+        localStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(), audio: false });
     } catch (e) { log('camera error: ' + e.message); return; }
 
+    listCameras();
     localVideo.srcObject = localStream;
     localVideo.hidden = false;
     const cfg = await pickCodec();
@@ -808,6 +849,12 @@ vcPip.addEventListener('click', () => {
 
 $('go-live').addEventListener('click', goLive);
 $('screen-live').addEventListener('click', () => { if (localScreen) stopScreenShare(); else shareScreen(); });
+$('camera-select').addEventListener('change', (e) => {
+    L.deviceId = e.target.value || null;
+    if (L.mode === 'streamer' && !localScreen) switchCamera(L.deviceId);
+});
+navigator.mediaDevices?.addEventListener?.('devicechange', listCameras);
+listCameras();
 $('stop-live').addEventListener('click', stopLive);
 $('watch-btn').addEventListener('click', () => {
     const raw = $('watch-input').value.trim();

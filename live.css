@@ -68,6 +68,11 @@
     width: 100%; padding: 10px 12px; margin-bottom: 8px;
     background: var(--color-background); border: 1px solid var(--line);
 }
+#live-side select {
+    width: 100%; padding: 10px 12px; margin-bottom: 8px;
+    background: var(--color-background); border: 1px solid var(--line);
+}
+#live-side label.muted { display: block; margin-bottom: 2px; }
 #live-side .row { display: flex; gap: 6px; flex-wrap: wrap; }
 #live-side .row input { flex: 1 1 160px; min-width: 0; margin-bottom: 0; }
 #live-side .check { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: .85rem; color: var(--muted); }

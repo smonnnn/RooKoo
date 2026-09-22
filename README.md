@@ -119,6 +119,10 @@ How it works:
 - The streamer can switch between the **camera and screen sharing** at any
   time; the encoder reconfigures and viewers just receive a new decoder config,
   so the tree keeps forwarding unchanged.
+- The **video source** can be any camera/capture device. **OBS**: start OBS's
+  *Virtual Camera*, then pick it as the source (or use *Share screen* to send
+  the OBS window). RTMP/WHIP ingest isn't possible without a server, but the
+  virtual camera gives OBS output into the tree with no extra infrastructure.
 - `NostrP2P` (the same library the rooms use) carries discovery and the
   signaling for the streaming data channels; the encoded media flows over
   dedicated WebRTC data channels.
