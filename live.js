@@ -477,9 +477,11 @@ function sourceDims() {
 }
 
 // Video input constraints for the selected source (or the default camera).
+// No width/height: forcing 16:9 makes portrait phone cameras deliver a cropped
+// landscape frame. Native orientation is kept and capped later by fitDims().
 function videoConstraints() {
-    const base = { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 30 } };
-    return L.deviceId ? { deviceId: { exact: L.deviceId }, ...base } : base;
+    const base = { frameRate: { ideal: 30 } };
+    return L.deviceId ? { deviceId: { exact: L.deviceId }, ...base } : { facingMode: 'user', ...base };
 }
 
 // List video inputs — including "OBS Virtual Camera" once OBS is running it.
