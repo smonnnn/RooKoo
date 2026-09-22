@@ -1044,6 +1044,18 @@ $('settings-open').addEventListener('click', () => {
     settingsDialog.showModal();
 });
 $('settings-cancel').addEventListener('click', () => settingsDialog.close());
+// Unregister the service worker and clear caches, then reload (fresh assets).
+$('settings-hard').addEventListener('click', async () => {
+    try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+    } catch { /* ignore */ }
+    try {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+    } catch { /* ignore */ }
+    location.reload();
+});
 $('settings-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const urls = $('relays-input').value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);

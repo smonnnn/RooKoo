@@ -1619,6 +1619,7 @@ function buildUI() {
         settingsDialog.showModal();
     });
     document.getElementById('settings-cancel').addEventListener('click', () => settingsDialog.close());
+    document.getElementById('settings-hard').addEventListener('click', hardReload);
     document.getElementById('settings-identity').addEventListener('click', () => {
         // Always-random identities: mint a brand new one on demand.
         localStorage.setItem('rookoo_sk', bytesToHex(generateSecretKey()));
@@ -1673,6 +1674,20 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     window.addEventListener('load', () => {
         navigator.serviceWorker.register('./sw.js').catch(() => { /* offline support is optional */ });
     });
+}
+
+// Unregister service workers and drop cached assets, then reload — reliable
+// way to pick up a new deployment on phones/PWAs.
+async function hardReload() {
+    try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+    } catch { /* ignore */ }
+    try {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+    } catch { /* ignore */ }
+    location.reload();
 }
 
 window.__state = state;

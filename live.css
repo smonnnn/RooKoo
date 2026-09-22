@@ -23,7 +23,14 @@
     place-items: center;
     overflow: hidden;
 }
-.stage canvas, .stage #stage-video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+/* Absolutely positioned so they fill the stage exactly (a percentage height on
+   a grid item in an auto row would resolve to the intrinsic aspect and
+   overflow). contain then letterboxes / pillarboxes to fit. */
+.stage canvas, .stage #stage-video {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: contain; display: block; background: #000;
+}
 .stage-hint { position: absolute; color: #8b97a8; font-size: .9rem; }
 
 #stream-info {
