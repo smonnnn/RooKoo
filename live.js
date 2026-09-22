@@ -424,7 +424,7 @@ function stopLive() {
 }
 
 function showShareLink() {
-    const link = new URL('./live', location.href).href + '#' + L.npub;
+    const link = location.href.split('#')[0] + '#' + L.npub;
     $('share-link').textContent = link;
     $('share-row').hidden = false;
 }
@@ -628,11 +628,6 @@ $('copy-link').addEventListener('click', async () => {
     catch { log($('share-link').textContent); }
 });
 
-// Clean /live URL when opened via the 404 fallback (…/live.html → …/live).
-if (/live\.html$/.test(location.pathname)) {
-    history.replaceState(null, '', location.pathname.replace(/live\.html$/, 'live') + location.hash);
-    try { sessionStorage.removeItem('rookoo_route'); } catch { /* ignore */ }
-}
 // Auto-join if the link carries a streamer npub.
 const invited = (location.hash.match(/npub1[02-9ac-hj-np-z]{20,}/i) || [])[0];
 if (invited) { $('watch-input').value = invited; watch(invited); }

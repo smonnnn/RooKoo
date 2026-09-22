@@ -14,7 +14,7 @@
             if (m) {
                 base = m[1];
                 route = m[2];
-                page = route === 'live' ? '/live.html' : '/index.html';
+                page = route === 'live' ? '/live/' : '/index.html';
             } else {
                 base = path.replace(/\/[^/]*$/, '');
                 route = 'room';

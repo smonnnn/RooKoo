@@ -181,7 +181,7 @@ button is hidden on platforms that don't support it (e.g. iOS).
 | File | Purpose |
 | --- | --- |
 | `index.html`, `style.css`, `app.js` | The room application |
-| `live.html`, `live.css`, `live.js` | The tree live-streaming application (`/live`) |
+| `live/index.html`, `live.css`, `live.js` | The tree live-streaming application (`/live`) |
 | `404.html` | GitHub Pages fallback that maps `/live` and `/room` |
 | `manifest.webmanifest`, `sw.js` | PWA manifest and offline service worker |
 | `icon.png`, `icon-192.png`, `icon-512.png` | App icon / favicon (from the Pidge project) |
