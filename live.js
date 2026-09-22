@@ -1023,6 +1023,37 @@ $('privacy-close').addEventListener('click', () => {
     localStorage.setItem('rookoo_privacy_ok', '1');
 });
 
+// Network settings (relays + TURN, including credentials).
+const settingsDialog = $('settings-dialog');
+$('settings-open').addEventListener('click', () => {
+    const relays = JSON.parse(localStorage.getItem('nostr_p2p_relays') || 'null');
+    $('relays-input').value = Array.isArray(relays) ? relays.join('\n') : '';
+    const turn = JSON.parse(localStorage.getItem('nostr_p2p_turn') || 'null') || {};
+    $('turn-input').value = turn.urls || '';
+    $('turn-username').value = turn.username || '';
+    $('turn-credential').value = turn.credential || '';
+    settingsDialog.showModal();
+});
+$('settings-cancel').addEventListener('click', () => settingsDialog.close());
+$('settings-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const urls = $('relays-input').value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+    if (urls.length) localStorage.setItem('nostr_p2p_relays', JSON.stringify(urls));
+    else localStorage.removeItem('nostr_p2p_relays');
+    const turnUrl = $('turn-input').value.trim();
+    const username = $('turn-username').value.trim();
+    const credential = $('turn-credential').value;
+    if (turnUrl) {
+        const turn = { urls: turnUrl };
+        if (username) turn.username = username;
+        if (credential) turn.credential = credential;
+        localStorage.setItem('nostr_p2p_turn', JSON.stringify(turn));
+    } else {
+        localStorage.removeItem('nostr_p2p_turn');
+    }
+    location.reload();
+});
+
 // Video controls. Pausing only freezes the picture; packets keep flowing to
 // downstream viewers. Resuming requests a fresh keyframe.
 const vcPlay = $('vc-play'), vcFs = $('vc-fs'), vcPip = $('vc-pip'), vcLive = $('vc-live');

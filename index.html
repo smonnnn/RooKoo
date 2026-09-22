@@ -136,7 +136,11 @@
             <label for="relays-input">Nostr relay URLs (one per line)</label>
             <textarea id="relays-input" rows="4" spellcheck="false" placeholder="wss://relay.example.com"></textarea>
             <label for="turn-input">TURN server URL (optional, for strict NATs)</label>
-            <input id="turn-input" type="text" spellcheck="false" placeholder="turn:turn.example.com:3478">
+            <input id="turn-input" type="text" spellcheck="false" placeholder="turn:turn.example.com:3478  or  turns:turn.example.com:5349">
+            <label for="turn-username">TURN username (optional)</label>
+            <input id="turn-username" type="text" spellcheck="false" autocomplete="off" placeholder="username">
+            <label for="turn-credential">TURN credential (optional)</label>
+            <input id="turn-credential" type="password" spellcheck="false" autocomplete="off" placeholder="password">
             <div class="row end">
                 <button class="btn ghost" id="settings-identity" type="button">New random identity</button>
                 <button class="btn ghost" id="settings-cancel" type="button">Cancel</button>

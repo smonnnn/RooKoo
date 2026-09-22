@@ -22,6 +22,7 @@
             </div>
             <div id="live-status" class="pill">idle</div>
             <div class="spacer"></div>
+            <button id="settings-open" class="btn ghost icon" title="Network settings">⚙</button>
             <a class="btn ghost" href="../">← Rooms</a>
         </header>
 
@@ -103,5 +104,24 @@
             </aside>
         </main>
     </div>
+
+    <dialog id="settings-dialog">
+        <form method="dialog" id="settings-form">
+            <h3>Network settings</h3>
+            <p class="muted small">Relays are only used to introduce peers (WebRTC signaling). A TURN server relays the connection when peers can't reach each other directly (strict NATs, firewalls). Saving reloads the page.</p>
+            <label for="relays-input">Nostr relay URLs (one per line)</label>
+            <textarea id="relays-input" rows="4" spellcheck="false" placeholder="wss://relay.example.com"></textarea>
+            <label for="turn-input">TURN server URL</label>
+            <input id="turn-input" type="text" spellcheck="false" placeholder="turn:turn.example.com:3478  or  turns:turn.example.com:5349">
+            <label for="turn-username">TURN username (optional)</label>
+            <input id="turn-username" type="text" spellcheck="false" autocomplete="off" placeholder="username">
+            <label for="turn-credential">TURN credential (optional)</label>
+            <input id="turn-credential" type="password" spellcheck="false" autocomplete="off" placeholder="password">
+            <div class="row end">
+                <button class="btn ghost" id="settings-cancel" type="button">Cancel</button>
+                <button class="btn primary" type="submit">Save &amp; reload</button>
+            </div>
+        </form>
+    </dialog>
 </body>
 </html>

@@ -145,8 +145,10 @@ For the most reliable connections, run your own relay and set it under
 **⚙ Network settings** (stored in `localStorage.nostr_p2p_relays`, one URL per
 line). A relay you control makes joins near-instant.
 
-For peers behind strict/symmetric NATs, add a **TURN** server in the same
-dialog (stored in `localStorage.nostr_p2p_turn`). STUN is always included; TURN
+For peers behind strict/symmetric NATs, add a **TURN** server (URL, plus
+optional username and credential) in the settings dialog — available on both the
+rooms and the live page. It's stored in `localStorage.nostr_p2p_turn` as
+`{urls, username?, credential?}`. STUN is always included; TURN
 is what makes hard NATs work.
 
 ### Testing with two windows on one machine

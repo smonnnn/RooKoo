@@ -1612,8 +1612,10 @@ function buildUI() {
     document.getElementById('settings-open').addEventListener('click', () => {
         const relays = JSON.parse(localStorage.getItem('nostr_p2p_relays') || 'null');
         document.getElementById('relays-input').value = Array.isArray(relays) ? relays.join('\n') : '';
-        const turn = JSON.parse(localStorage.getItem('nostr_p2p_turn') || 'null');
-        document.getElementById('turn-input').value = turn?.urls || '';
+        const turn = JSON.parse(localStorage.getItem('nostr_p2p_turn') || 'null') || {};
+        document.getElementById('turn-input').value = turn.urls || '';
+        document.getElementById('turn-username').value = turn.username || '';
+        document.getElementById('turn-credential').value = turn.credential || '';
         settingsDialog.showModal();
     });
     document.getElementById('settings-cancel').addEventListener('click', () => settingsDialog.close());
@@ -1627,9 +1629,17 @@ function buildUI() {
         const urls = document.getElementById('relays-input').value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
         if (urls.length) localStorage.setItem('nostr_p2p_relays', JSON.stringify(urls));
         else localStorage.removeItem('nostr_p2p_relays');
-        const turn = document.getElementById('turn-input').value.trim();
-        if (turn) localStorage.setItem('nostr_p2p_turn', JSON.stringify({ urls: turn }));
-        else localStorage.removeItem('nostr_p2p_turn');
+        const turnUrl = document.getElementById('turn-input').value.trim();
+        const username = document.getElementById('turn-username').value.trim();
+        const credential = document.getElementById('turn-credential').value;
+        if (turnUrl) {
+            const turn = { urls: turnUrl };
+            if (username) turn.username = username;
+            if (credential) turn.credential = credential;
+            localStorage.setItem('nostr_p2p_turn', JSON.stringify(turn));
+        } else {
+            localStorage.removeItem('nostr_p2p_turn');
+        }
         location.reload();
     });
 
