@@ -174,21 +174,24 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 
 #video-grid {
     flex: 1; min-width: 0;
-    display: grid;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: center;
+    align-items: center;
+    justify-content: center;
     gap: 6px;
     padding: 6px;
-    place-content: center;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     overflow: auto;
     position: relative;
     background: var(--color-background);
 }
 .tile {
     position: relative;
+    flex: 0 1 360px;
+    max-width: 100%;
     background: var(--color-items);
     border: 1px solid var(--line);
     overflow: hidden;
-    height: 100%;
     aspect-ratio: 16 / 9;
     min-height: 160px;
     animation: pop .18s ease;
@@ -378,7 +381,7 @@ dialog textarea { resize: vertical; }
        controls at 16px so typing never triggers a zoom. */
     input, textarea, select { font-size: 16px; }
 
-    #video-grid { grid-template-columns: 1fr; gap: 8px; padding: 8px; }
+    #video-grid { gap: 8px; padding: 8px; }
     #topbar { gap: 6px; padding-right: 6px; }
     #topbar .brand-name { display: none; }
     #topbar .btn { padding: 8px 10px; }
