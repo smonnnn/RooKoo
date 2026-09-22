@@ -8,6 +8,7 @@
     display: flex;
     gap: 10px;
     padding: 10px;
+    overflow-x: hidden;
 }
 #live-video-col { flex: 1; min-width: 0; display: flex; }
 
@@ -57,7 +58,10 @@
 /* ---- side column ---- */
 #live-side {
     width: 340px; flex: none;
+    min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
     display: flex; flex-direction: column; gap: 10px;
 }
 #live-side .card { background: var(--color-card); border: 1px solid var(--line); padding: 12px; }
@@ -101,8 +105,36 @@
 .stage:fullscreen #video-controls { background: rgba(5, 7, 10, .8); }
 
 @media (max-width: 900px) {
-    #live-main { flex-direction: column; overflow-y: auto; }
+    #live-main {
+        flex-direction: column;
+        overflow-y: auto;
+        overflow-x: hidden;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+        padding: 8px;
+        gap: 8px;
+    }
     #live-video-col { flex: none; }
     .stage { aspect-ratio: 16/9; flex: none; }
-    #live-side { width: auto; overflow: visible; }
+    #live-side { width: auto; overflow: visible; overscroll-behavior: auto; }
+    #topbar .brand-name { display: none; }
+    #video-controls { bottom: 6px; gap: 4px; padding: 3px 5px; }
+    #video-controls .btn.round { width: 46px; height: 46px; font-size: 1.1rem; }
+    #live-side input[type="text"], #live-side select { font-size: 16px; }
+    .notice { font-size: .76rem; padding: 6px 8px; }
+    #live-side .card { padding: 10px; }
+}
+
+@media (max-width: 520px) {
+    #topbar { gap: 6px; padding-right: 6px; }
+    #topbar .brand { gap: 6px; }
+    #live-status { font-size: .72rem; padding: 3px 8px; }
+}
+
+/* Landscape phones: video left, controls/cards right. */
+@media (orientation: landscape) and (min-width: 640px) and (max-height: 560px) {
+    #live-main { flex-direction: row; overflow-y: hidden; }
+    #live-video-col { flex: 1; }
+    .stage { aspect-ratio: auto; height: 100%; }
+    #live-side { width: 300px; overflow-y: auto; }
 }

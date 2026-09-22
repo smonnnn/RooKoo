@@ -944,6 +944,16 @@ $('camera-select').addEventListener('change', (e) => {
 });
 navigator.mediaDevices?.addEventListener?.('devicechange', listCameras);
 listCameras();
+
+// WebCodecs capability check (Chrome/Edge and Android Chrome; iOS Safari lacks
+// it). Disable the parts that can't work so phones still make sense.
+const canEncode = typeof MediaStreamTrackProcessor !== 'undefined' && typeof VideoEncoder !== 'undefined';
+const canDecode = typeof VideoDecoder !== 'undefined';
+if (!canEncode) $('go-live').disabled = true;
+if (!canDecode) {
+    $('watch-btn').disabled = true;
+    stageHint.textContent = 'This browser can’t play the stream — WebCodecs is needed (Chrome/Edge/Android).';
+}
 $('stop-live').addEventListener('click', stopLive);
 $('watch-btn').addEventListener('click', () => {
     const raw = $('watch-input').value.trim();
@@ -959,7 +969,8 @@ $('copy-link').addEventListener('click', async () => {
 
 // Auto-join if the link carries a streamer npub.
 const invited = (location.hash.match(/npub1[02-9ac-hj-np-z]{20,}/i) || [])[0];
-if (invited) { $('watch-input').value = invited; watch(invited); }
+if (invited && canDecode) { $('watch-input').value = invited; watch(invited); }
+else if (invited) { log('This browser can’t decode the stream (needs WebCodecs: Chrome/Edge/Android).'); }
 startTick();
 updateStats();
 updateStreamInfoUI();
