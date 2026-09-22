@@ -177,7 +177,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
     display: grid;
     gap: 6px;
     padding: 6px;
-    align-content: start;
+    place-content: center;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     overflow: auto;
     position: relative;
@@ -188,6 +188,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
     background: var(--color-items);
     border: 1px solid var(--line);
     overflow: hidden;
+    height: 100%;
     aspect-ratio: 16 / 9;
     min-height: 160px;
     animation: pop .18s ease;
