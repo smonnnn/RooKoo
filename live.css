@@ -114,8 +114,12 @@
         padding: 8px;
         gap: 8px;
     }
+    /* Idle: a 16:9 preview. With an active feed: fill the whole visible area
+       (letterboxed inside), cards scroll below. */
     #live-video-col { display: block; flex: none; }
     .stage { width: 100%; aspect-ratio: 16/9; flex: none; }
+    #live-app.active #live-video-col { height: 100%; }
+    #live-app.active .stage { height: 100%; aspect-ratio: auto; }
     #live-side { width: auto; overflow: visible; overscroll-behavior: auto; }
     #topbar .brand-name { display: none; }
     #video-controls { bottom: 6px; gap: 4px; padding: 3px 5px; }

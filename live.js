@@ -179,6 +179,8 @@ const L = {
 
 function log(...a) { $('live-log').textContent = a.join(' '); console.log('[live]', ...a); }
 function setStatus(text) { $('live-status').textContent = text; }
+// Full-bleed the video area while a feed is active (see live.css).
+function setActiveFeed(on) { $('live-app').classList.toggle('active', !!on); }
 function updateStats() {
     $('st-role').textContent = L.mode;
     $('st-source').textContent = L.streamerNpub ? L.streamerNpub.slice(0, 14) + '…' : '—';
@@ -552,6 +554,7 @@ async function goLive() {
     startTick();
     updateStreamInfoUI();
     setLiveBadge(true);
+    setActiveFeed(true);
     setControlsEnabled(true);
     vcPlay.hidden = true; // pausing your own outgoing stream isn't meaningful
     setStatus('live');
@@ -743,6 +746,7 @@ function stopLive() {
     updateStreamInfoUI();
     setLiveBadge(false);
     setControlsEnabled(false);
+    setActiveFeed(false);
     vcPlay.hidden = false;
 }
 
@@ -863,6 +867,7 @@ function endStream() {
     L.relays.clear();
     resetDecoder();
     clearVideo('Stream ended');
+    setActiveFeed(false);
     L.mode = 'idle';
     L.frames = 0;
     L.info = null;
@@ -963,6 +968,7 @@ function configureDecoder(cfg) {
                 L.frames++;
                 setControlsEnabled(true);
                 setLiveBadge(true);
+                setActiveFeed(true);
                 if (L.frames % 15 === 0) updateStats();
             },
             error: (e) => {
@@ -1001,6 +1007,7 @@ function leaveWatch() {
     L.relays.clear();
     resetDecoder();
     clearVideo('Nothing playing yet');
+    setActiveFeed(false);
     L.mode = 'idle';
     L.streamerNpub = null;
     L.info = null;
