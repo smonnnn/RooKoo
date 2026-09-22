@@ -688,6 +688,15 @@ function refreshTiles() {
     hydrateAvatars();
 }
 
+// Rebuild a scrollable list without losing the reader's position: only stick
+// to the bottom if they were already there, otherwise restore the offset.
+function setListHTML(el, html) {
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    const prev = el.scrollTop;
+    el.innerHTML = html;
+    el.scrollTop = nearBottom ? el.scrollHeight : prev;
+}
+
 function renderPeople() {
     const list = document.getElementById('people-list');
     if (!list) return;
@@ -715,13 +724,15 @@ function renderPeople() {
             <div class="info"><div>${escapeHtml(nameOf(npub))}</div><div class="sub">${escapeHtml(sub)}</div></div>
             <div class="dot ${conns.has(npub) ? 'on' : ''}"></div></div>`);
     }
-    list.innerHTML = rows.join('');
+    setListHTML(list, rows.join(''));
     hydrateAvatars();
 }
 
 function renderChat() {
     const log = document.getElementById('chat-log');
     if (!log) return;
+    const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+    const prevTop = log.scrollTop;
     log.innerHTML = '';
     for (const m of chatLog.slice(-300)) {
         const el = document.createElement('div');
@@ -752,7 +763,7 @@ function renderChat() {
         }
         log.appendChild(el);
     }
-    log.scrollTop = log.scrollHeight;
+    log.scrollTop = nearBottom ? log.scrollHeight : prevTop;
     renderFiles();
 }
 
@@ -769,10 +780,10 @@ function renderFiles() {
     if (!list) return;
     const entries = Object.values(fileMeta);
     if (!entries.length) {
-        list.innerHTML = '<p class="muted small">No files shared yet.</p>';
+        setListHTML(list, '<p class="muted small">No files shared yet.</p>');
         return;
     }
-    list.innerHTML = entries.slice(-100).reverse().map(f => {
+    setListHTML(list, entries.slice(-100).reverse().map(f => {
         const inc = incoming[f.hash];
         const pct = pctOf(inc);
         const url = objectURLs[f.hash];
@@ -787,7 +798,7 @@ function renderFiles() {
             <div class="sub muted">${fmtSize(f.size)}</div>
             ${inc ? `<div class="progress"><i style="width:${pct ?? 0}%"></i></div>` : ''}</div>
             ${action}</div>`;
-    }).join('');
+    }).join(''));
 }
 
 // ----------------------------------------------------------------- chat ----
