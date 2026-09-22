@@ -127,6 +127,22 @@ const stageVideo = $('stage-video');
 const stageHint = $('stage-hint');
 const ctx = remoteCanvas.getContext('2d');
 
+// Phones (iOS) pause a <video> when leaving native fullscreen, which would
+// freeze the camera preview — and the stream — so always nudge it back to play.
+function resumeVideos() {
+    for (const v of [localVideo, stageVideo]) {
+        if (v.srcObject && v.paused) v.play().catch(() => {});
+    }
+}
+for (const v of [localVideo, stageVideo]) {
+    v.addEventListener('pause', () => { if (v.srcObject) v.play().catch(() => {}); });
+    v.addEventListener('webkitendfullscreen', resumeVideos);
+}
+for (const evt of ['fullscreenchange', 'webkitfullscreenchange', 'webkitpresentationmodechanged']) {
+    document.addEventListener(evt, resumeVideos);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) resumeVideos(); });
+
 // ------------------------------------------------------------------- state --
 const L = {
     npub: null,
@@ -158,6 +174,7 @@ const L = {
     deviceId: null,
     lastPacketAt: 0,
     lastKeyReq: 0,
+    latency: 0,
 };
 
 function log(...a) { $('live-log').textContent = a.join(' '); console.log('[live]', ...a); }
@@ -167,6 +184,7 @@ function updateStats() {
     $('st-source').textContent = L.streamerNpub ? L.streamerNpub.slice(0, 14) + '…' : '—';
     $('st-upstream').textContent = L.upstream ? L.upstream.npub.slice(0, 14) + '…' : '—';
     $('st-down').textContent = String(L.children.size);
+    $('st-lat').textContent = (L.mode === 'viewer' && L.latency) ? Math.round(L.latency) + ' ms' : '—';
     $('st-frames').textContent = String(L.frames);
 }
 function setSig(ok) {
@@ -557,7 +575,7 @@ async function goLive() {
                 forwardToChildren(L.cachedConfig);
             }
             if (!L.children.size) return;
-            const meta = { type: chunk.type, timestamp: chunk.timestamp, duration: chunk.duration || 0 };
+            const meta = { type: chunk.type, timestamp: chunk.timestamp, duration: chunk.duration || 0, wall: Date.now() };
             const data = new Uint8Array(chunk.byteLength);
             chunk.copyTo(data);
             const isKey = chunk.type === 'key';
@@ -891,6 +909,7 @@ function onUpstreamData(data) {
         L.infoPacket = data;
         updateStreamInfoUI();
     } else if (packet.type === 0x02 || packet.type === 0x12) {
+        if (packet.meta.wall) L.latency = Math.max(0, Date.now() - packet.meta.wall);
         if (packet.meta.type === 'key') L.hasKeyframe = true;
         // While paused we skip decoding (saving CPU) but keep relaying the raw
         // signed packets, so downstream still gets the latest stream. The
