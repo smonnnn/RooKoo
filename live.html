@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+    <meta name="theme-color" content="#B8C4D0">
+    <title>RooKoo Live — peer-to-peer streaming</title>
+    <link rel="icon" href="./icon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./style.css">
+    <link rel="stylesheet" href="./live.css">
+    <script type="module" src="./live.js"></script>
+</head>
+<body>
+    <div id="live-app">
+        <header id="topbar">
+            <div class="brand">
+                <img class="brand-mark" src="./icon.png" alt="">
+                <span class="brand-name">RooKoo <b>Live</b></span>
+            </div>
+            <div id="live-status" class="pill">idle</div>
+            <div class="spacer"></div>
+            <a class="btn ghost" href="./">← Rooms</a>
+        </header>
+
+        <main id="live-main">
+            <section class="card">
+                <h3>Broadcast</h3>
+                <p class="muted small">Encode your camera with WebCodecs and stream it to the network. Every chunk is signed with your key; each viewer verifies it and can forward it on — a tree, so each node only sends a few copies.</p>
+                <div class="row-btns">
+                    <button id="go-live" class="btn primary">Go live</button>
+                    <button id="stop-live" class="btn danger" disabled>Stop</button>
+                </div>
+                <video id="local-video" autoplay muted playsinline hidden></video>
+                <div id="share-row" class="share-row" hidden>
+                    <span class="muted small">Your live link:</span>
+                    <code id="share-link"></code>
+                    <button id="copy-link" class="btn">Copy</button>
+                </div>
+            </section>
+
+            <section class="card">
+                <h3>Watch</h3>
+                <p class="muted small">Open someone's live link, or paste the streamer's ID. You'll be placed in their tree automatically and can help relay to others.</p>
+                <div class="row">
+                    <input id="watch-input" type="text" placeholder="Live link or streamer ID…" spellcheck="false">
+                    <button id="watch-btn" class="btn primary">Watch</button>
+                    <button id="leave-btn" class="btn" disabled>Leave</button>
+                </div>
+                <label class="check"><input type="checkbox" id="relay-check" checked> Help relay to other viewers</label>
+            </section>
+
+            <section class="stage">
+                <canvas id="remote-canvas" hidden></canvas>
+                <div id="stage-hint" class="stage-hint">Nothing playing yet</div>
+            </section>
+
+            <section class="card">
+                <h3>Status</h3>
+                <div class="stats">
+                    <div class="stat">role <b id="st-role">—</b></div>
+                    <div class="stat">source <b id="st-source">—</b></div>
+                    <div class="stat">upstream <b id="st-upstream">—</b></div>
+                    <div class="stat">downstream <b id="st-down">0</b></div>
+                    <div class="stat">signature <b id="st-sig">—</b></div>
+                    <div class="stat">frames <b id="st-frames">0</b></div>
+                </div>
+                <p class="muted small" id="live-log"></p>
+            </section>
+        </main>
+    </div>
+</body>
+</html>

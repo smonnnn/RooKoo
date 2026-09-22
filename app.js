@@ -1617,6 +1617,17 @@ function buildUI() {
 
 document.addEventListener('DOMContentLoaded', () => { setupLogin(); checkMultiTab(); });
 
+// Route cleanup: when GitHub Pages 404-routed /room here, restore the clean URL.
+if (/index\.html$/.test(location.pathname)) {
+    let route = null;
+    try { route = sessionStorage.getItem('rookoo_route'); } catch { /* ignore */ }
+    const base = location.pathname.replace(/index\.html$/, '');
+    if (route === 'live') location.replace(base + 'live.html' + location.hash);
+    else if (route === 'room') {
+        try { history.replaceState(null, '', base + 'room' + location.hash); sessionStorage.removeItem('rookoo_route'); } catch { /* ignore */ }
+    }
+}
+
 // Installable PWA: cache the app shell so it opens offline. Only meaningful
 // on a secure origin (https or localhost).
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {

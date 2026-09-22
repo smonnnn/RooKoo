@@ -89,6 +89,41 @@ Then open <http://localhost:8080>. Camera/microphone access requires
    self-view). Chat and files live in the right-hand sidebar. The **People**
    panel shows each member and the npub they joined through.
 
+## Live streaming (`/live`)
+
+RooKoo has two modes:
+
+- **`/room`** (and the root) — the small mesh meeting app described above.
+- **`/live`** — large-scale, one-to-many streaming built as a **tree**.
+
+Open **`/live`**, click **Go live**, and share the generated link (it contains
+your streamer ID). Viewers open the link and are placed into the tree
+automatically; anyone can help relay.
+
+How it works:
+
+- The streamer captures the camera and encodes it with the browser's
+  **WebCodecs** `VideoEncoder` (VP9, falling back to VP8).
+- **Every encoded chunk is signed with the streamer's Nostr key.** Each viewer
+  verifies the signature against the streamer's npub *before* decoding or
+  forwarding, so the picture is provably from the original author no matter how
+  many hops it travelled — a forwarding relay cannot alter or fake frames.
+- Each node forwards the **same signed packet** to a few downstream viewers
+  (branching factor 3 by default, set with `?children=N` or
+  `localStorage.rookoo_live_children`). This forms a tree: the streamer uploads
+  only a handful of copies, yet the audience grows exponentially and every node
+  keeps its own traffic small.
+- Admission is centralized: a joining viewer asks the streamer; if the streamer
+  is full it is **redirected** to a child that still has capacity, which may
+  redirect again. Nodes advertise their spare capacity upstream.
+- `NostrP2P` (the same library the rooms use) carries discovery and the
+  signaling for the streaming data channels; the encoded media flows over
+  dedicated WebRTC data channels.
+
+Requirements & limits: WebCodecs (`MediaStreamTrackProcessor`, `VideoEncoder`)
+is currently Chrome/Edge (desktop and Android). The stream is **video-only**.
+A dead upstream triggers automatic reconnection attempts.
+
 ## Relays and NAT traversal
 
 Relays are only used for the WebRTC handshake (SDP/ICE). Public relays are
@@ -145,7 +180,9 @@ button is hidden on platforms that don't support it (e.g. iOS).
 
 | File | Purpose |
 | --- | --- |
-| `index.html`, `style.css`, `app.js` | The application |
+| `index.html`, `style.css`, `app.js` | The room application |
+| `live.html`, `live.css`, `live.js` | The tree live-streaming application (`/live`) |
+| `404.html` | GitHub Pages fallback that maps `/live` and `/room` |
 | `manifest.webmanifest`, `sw.js` | PWA manifest and offline service worker |
 | `icon.png`, `icon-192.png`, `icon-512.png` | App icon / favicon (from the Pidge project) |
 | `nostr-p2p.js` | The vendored NostrP2P library (signaling + data-channel mesh) |

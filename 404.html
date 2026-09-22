@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>RooKoo</title>
+    <script>
+        // GitHub Pages 404 fallback: map /live and /room to the right app while
+        // remembering the clean route so the app can restore it with
+        // history.replaceState after loading.
+        (function () {
+            var path = location.pathname;
+            var m = path.match(/^(.*?)\/(live|room)\/?$/);
+            var base, page, route;
+            if (m) {
+                base = m[1];
+                route = m[2];
+                page = route === 'live' ? '/live.html' : '/index.html';
+            } else {
+                base = path.replace(/\/[^/]*$/, '');
+                route = 'room';
+                page = '/index.html';
+            }
+            try { sessionStorage.setItem('rookoo_route', route); } catch (e) { /* ignore */ }
+            location.replace(base + page + location.search + location.hash);
+        })();
+    </script>
+</head>
+<body></body>
+</html>
