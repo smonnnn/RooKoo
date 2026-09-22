@@ -399,7 +399,7 @@ function iceComplete(pc, maxMs = 6000) {
 }
 
 // ---------------------------------------------------------------- streamer --
-let encoder = null, reader = null, localStream = null, frameCount = 0;
+let encoder = null, reader = null, localStream = null, localScreen = null, encodeCfg = null, frameCount = 0;
 
 async function pickCodec() {
     const candidates = [{ codec: 'vp09.00.10.08' }, { codec: 'vp8' }];
@@ -439,6 +439,7 @@ async function goLive() {
     setStatus('live');
     $('go-live').disabled = true;
     $('stop-live').disabled = false;
+    if (navigator.mediaDevices?.getDisplayMedia) $('screen-live').disabled = false;
     showShareLink();
     updateStats();
 
@@ -464,9 +465,16 @@ async function goLive() {
         },
         error: (e) => log('encoder error: ' + e.message),
     });
+    encodeCfg = cfg;
     await encoder.configure(cfg);
+    startReader(localStream.getVideoTracks()[0]);
+}
 
-    const processor = new MediaStreamTrackProcessor({ track: localStream.getVideoTracks()[0] });
+// Feed the encoder from a given video track (camera or screen). Switching the
+// reader keeps the same encoder; a keyframe is forced so viewers resync.
+function startReader(track) {
+    if (reader) { reader.cancel().catch(() => {}); reader = null; }
+    const processor = new MediaStreamTrackProcessor({ track });
     reader = processor.readable.getReader();
     (async () => {
         try {
@@ -485,12 +493,54 @@ async function goLive() {
     })();
 }
 
+// Broadcast the screen instead of the camera. The signed-chunk protocol is
+// unchanged, so provenance and forwarding keep working; viewers just get a new
+// decoder config when the resolution changes.
+async function shareScreen() {
+    if (L.mode !== 'streamer' || localScreen) return;
+    if (!navigator.mediaDevices?.getDisplayMedia) { log('screen sharing not supported here'); return; }
+    try {
+        localScreen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    } catch { return; }
+    const track = localScreen.getVideoTracks()[0];
+    track.onended = () => stopScreenShare();
+    localVideo.srcObject = localScreen;
+    try { await encoder.configure({ ...encodeCfg, width: 1280, height: 720 }); } catch { /* keep current */ }
+    startReader(track);
+    L.forceKeyframe = true;
+    $('screen-live').textContent = 'Stop screen';
+    $('screen-live').classList.add('off');
+    log('sharing screen');
+}
+
+async function stopScreenShare() {
+    const screen = localScreen;
+    localScreen = null;
+    if (screen) {
+        // Detach onended first so stopping doesn't re-enter this function.
+        screen.getTracks().forEach((t) => { t.onended = null; t.stop(); });
+    }
+    if (L.mode === 'streamer' && encoder && localStream) {
+        localVideo.srcObject = localStream;
+        try { await encoder.configure(encodeCfg); } catch { /* ignore */ }
+        startReader(localStream.getVideoTracks()[0]);
+        L.forceKeyframe = true;
+    }
+    const btn = $('screen-live');
+    if (btn) { btn.textContent = 'Share screen'; btn.classList.remove('off'); }
+    log('screen stopped');
+}
+
 function stopLive() {
     if (reader) { reader.cancel().catch(() => {}); reader = null; }
+    if (localScreen) { localScreen.getTracks().forEach((t) => t.stop()); localScreen = null; }
     if (encoder) { try { encoder.close(); } catch { /* ignore */ } encoder = null; }
     if (localStream) { localStream.getTracks().forEach((t) => t.stop()); localStream = null; }
     localVideo.srcObject = null;
     localVideo.hidden = true;
+    $('screen-live').textContent = 'Share screen';
+    $('screen-live').classList.remove('off');
+    $('screen-live').disabled = true;
     for (const [, c] of L.children) { try { c.pc.close(); } catch { /* ignore */ } }
     L.children.clear();
     L.relays.clear();
@@ -757,6 +807,7 @@ vcPip.addEventListener('click', () => {
 });
 
 $('go-live').addEventListener('click', goLive);
+$('screen-live').addEventListener('click', () => { if (localScreen) stopScreenShare(); else shareScreen(); });
 $('stop-live').addEventListener('click', stopLive);
 $('watch-btn').addEventListener('click', () => {
     const raw = $('watch-input').value.trim();

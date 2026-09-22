@@ -116,6 +116,9 @@ How it works:
 - Admission is centralized: a joining viewer asks the streamer; if the streamer
   is full it is **redirected** to a child that still has capacity, which may
   redirect again. Nodes advertise their spare capacity upstream.
+- The streamer can switch between the **camera and screen sharing** at any
+  time; the encoder reconfigures and viewers just receive a new decoder config,
+  so the tree keeps forwarding unchanged.
 - `NostrP2P` (the same library the rooms use) carries discovery and the
   signaling for the streaming data channels; the encoded media flows over
   dedicated WebRTC data channels.
