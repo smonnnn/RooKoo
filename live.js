@@ -77,7 +77,7 @@ const PROTO = {
     // 0x01 decoder config, 0x03 stream info — both signed over their metadata.
     packConfig(cfg) { return packSigned(0x01, cfg); },
     packInfo(info) { return packSigned(0x03, info); },
-    packChunk(meta, data) {
+    packChunk(meta, data, isKey) {
         const metaBytes = new TextEncoder().encode(JSON.stringify(meta));
         const dataBytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
         const toSign = new Uint8Array(metaBytes.length + dataBytes.length);
@@ -86,7 +86,9 @@ const PROTO = {
         const sig = signData(toSign);
         const buf = new ArrayBuffer(5 + metaBytes.length + 64 + dataBytes.length);
         const u8 = new Uint8Array(buf);
-        u8[0] = 0x02;
+        // 0x02 = delta chunk, 0x12 = key chunk (so hops can protect keyframes
+        // from being dropped under backpressure without parsing the metadata).
+        u8[0] = isKey ? 0x12 : 0x02;
         new DataView(buf).setUint32(1, metaBytes.length, true);
         u8.set(metaBytes, 5);
         u8.set(sig, 5 + metaBytes.length);
@@ -153,6 +155,8 @@ const L = {
     tick: null,
     paused: false,
     deviceId: null,
+    lastPacketAt: 0,
+    lastKeyReq: 0,
 };
 
 function log(...a) { $('live-log').textContent = a.join(' '); console.log('[live]', ...a); }
@@ -341,9 +345,14 @@ function notifyUpstreamCapacity() {
     sendControlUpstream('relay-update', { current: L.children.size, capacity: L.relayEnabled ? MAX_CHILDREN : 0, subtree: subtreeSize(), npub: L.npub });
 }
 function forwardToChildren(buf) {
+    // Config (0x01) and keyframes (0x12) are always forwarded so a congested
+    // child can resync; delta chunks are dropped while a child is backed up.
+    const important = [0x01, 0x12].includes(new Uint8Array(buf)[0]);
     for (const [, c] of L.children) {
-        if (c.channel?.readyState !== 'open') continue;
-        try { c.channel.send(buf); } catch { /* ignore */ }
+        const ch = c.channel;
+        if (!ch || ch.readyState !== 'open') continue;
+        if (!important && ch.bufferedAmount > BUFFER_LIMIT) continue;
+        try { ch.send(buf); } catch { /* ignore */ }
     }
 }
 
@@ -376,6 +385,18 @@ function startTick() {
         updateStreamInfoUI();
         n++;
         if (L.mode === 'streamer' && n % 3 === 0) sendInfo();
+        // Viewer watchdog: nudge a stalled upstream, then reconnect if dead.
+        if (L.mode === 'viewer' && L.upstream) {
+            const idle = Date.now() - (L.lastPacketAt || Date.now());
+            if (idle > 12000) {
+                log('stream stalled — reconnecting');
+                upstreamClosed();
+            } else if (idle > 5000 && Date.now() - L.lastKeyReq > 3000) {
+                L.lastKeyReq = Date.now();
+                requestConfigUpstream();
+                requestKeyframeUpstream();
+            }
+        }
     }, 1000);
 }
 // Streamer: (re)build the signed info packet and push it to the tree.
@@ -496,11 +517,11 @@ async function goLive() {
             const meta = { type: chunk.type, timestamp: chunk.timestamp, duration: chunk.duration || 0 };
             const data = new Uint8Array(chunk.byteLength);
             chunk.copyTo(data);
-            const packet = PROTO.packChunk(meta, data);
             const isKey = chunk.type === 'key';
+            const packet = PROTO.packChunk(meta, data, isKey);
             for (const [, child] of L.children) {
                 if (child.channel?.readyState !== 'open') continue;
-                if (!isKey && child.channel.bufferedAmount > BUFFER_LIMIT) continue; // shed load
+                if (!isKey && child.channel.bufferedAmount > BUFFER_LIMIT) continue;
                 try { child.channel.send(packet); } catch { /* ignore */ }
             }
         },
@@ -525,8 +546,13 @@ function startReader(track) {
                 if (encoder?.state === 'configured') {
                     frameCount++;
                     const key = L.forceKeyframe || frameCount % KEYFRAME_INTERVAL === 0;
-                    if (key) { L.forceKeyframe = false; try { encoder.encode(frame, { keyFrame: true }); } catch { encoder.encode(frame); } }
-                    else encoder.encode(frame);
+                    if (key) {
+                        L.forceKeyframe = false;
+                        try { encoder.encode(frame, { keyFrame: true }); } catch { /* ignore */ }
+                    } else if (encoder.encodeQueueSize <= 6) {
+                        try { encoder.encode(frame); } catch { /* ignore */ }
+                    }
+                    // else: the encoder is behind — drop this frame to stay real-time
                 }
                 frame.close();
             }
@@ -662,6 +688,7 @@ async function connectUpstream(target, role) {
     ch.binaryType = 'arraybuffer';
     ch.onopen = () => {
         L.upstream = { npub: target, pc, channel: ch, role };
+        L.lastPacketAt = Date.now();
         setStatus('live');
         stageHint.textContent = role === 'streamer' ? 'Direct from streamer' : 'Relayed';
         updateStats();
@@ -693,6 +720,7 @@ function upstreamClosed() {
 }
 
 function onUpstreamData(data) {
+    L.lastPacketAt = Date.now();
     const u8 = new Uint8Array(data);
     if (u8[0] === 0x10) {
         let ctl;
@@ -723,12 +751,22 @@ function onUpstreamData(data) {
         L.info = packet.meta;
         L.infoPacket = data;
         updateStreamInfoUI();
-    } else if (packet.type === 0x02) {
+    } else if (packet.type === 0x02 || packet.type === 0x12) {
         if (packet.meta.type === 'key') L.hasKeyframe = true;
         // While paused we skip decoding (saving CPU) but keep relaying the raw
         // signed packets, so downstream still gets the latest stream. The
         // canvas keeps the last frame; resuming asks for a fresh keyframe.
-        if (!L.paused && L.hasKeyframe && L.decoder) {
+        if (L.paused) {
+            // relay only
+        } else if (!L.hasKeyframe || !L.decoder) {
+            // waiting for a keyframe to (re)start decoding
+        } else if (L.decoder.decodeQueueSize > 12) {
+            // Fell too far behind: reset and resync from a fresh keyframe.
+            console.warn('[live] decoder behind — resyncing');
+            decoderReset();
+            requestConfigUpstream();
+            requestKeyframeUpstream();
+        } else {
             try {
                 L.decoder.decode(new EncodedVideoChunk({
                     type: packet.meta.type,
@@ -736,7 +774,12 @@ function onUpstreamData(data) {
                     duration: packet.meta.duration || 0,
                     data: packet.data,
                 }));
-            } catch (e) { console.warn('[live] decode error', e); }
+            } catch (e) {
+                console.warn('[live] decode error', e);
+                decoderReset();
+                requestConfigUpstream();
+                requestKeyframeUpstream();
+            }
         }
     }
     // Forward the identical signed packet — downstream verifies the same author.
@@ -751,7 +794,7 @@ function configureDecoder(cfg) {
         L.hasKeyframe = false;
     }
     if (!L.decoder) {
-        L.decoder = new VideoDecoder({
+        const dec = new VideoDecoder({
             output: (frame) => {
                 remoteCanvas.hidden = false;
                 stageHint.style.display = 'none';
@@ -764,14 +807,26 @@ function configureDecoder(cfg) {
                 setLiveBadge(true);
                 if (L.frames % 15 === 0) updateStats();
             },
-            error: (e) => console.warn('[live] decoder error', e),
+            error: (e) => {
+                console.warn('[live] decoder error', e);
+                if (L.decoder === dec) { decoderReset(); requestConfigUpstream(); requestKeyframeUpstream(); }
+            },
         });
-        L.decoder._w = cfg.codedWidth;
-        L.decoder._h = cfg.codedHeight;
+        dec._w = cfg.codedWidth;
+        dec._h = cfg.codedHeight;
+        L.decoder = dec;
     }
     try { L.decoder.configure(cfg); L.decoderReady = true; }
     catch (e) { console.warn('[live] decoder configure failed', e); L.decoderReady = false; }
 }
+
+// Drop the decoder without clearing cachedConfig (relays still serve config).
+function decoderReset() {
+    if (L.decoder) { try { L.decoder.close(); } catch { /* ignore */ } L.decoder = null; }
+    L.hasKeyframe = false;
+    L.decoderReady = false;
+}
+function requestConfigUpstream() { sendControlUpstream('request-config', {}); }
 
 function resetDecoder() {
     L.hasKeyframe = false;
