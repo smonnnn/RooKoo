@@ -54,24 +54,29 @@ if (!skHex) {
     skHex = bytesToHex(generateSecretKey());
     localStorage.setItem('rookoo_sk', skHex);
 }
+const username = localStorage.getItem('rookoo_username') || 'anon';
 
 // ------------------------------------------------------------------- crypto --
 function signData(bytes) { return schnorr.sign(sha256(bytes), hexToBytes(skHex)); }
 function verifyData(pubBytes, sig, bytes) { return schnorr.verify(sig, sha256(bytes), pubBytes); }
 
 // ------------------------------------------------------------ wire protocol --
+function packSigned(type, meta) {
+    const metaBytes = new TextEncoder().encode(JSON.stringify(meta));
+    const sig = signData(metaBytes);
+    const buf = new ArrayBuffer(5 + metaBytes.length + 64);
+    const u8 = new Uint8Array(buf);
+    u8[0] = type;
+    new DataView(buf).setUint32(1, metaBytes.length, true);
+    u8.set(metaBytes, 5);
+    u8.set(sig, 5 + metaBytes.length);
+    return buf;
+}
+
 const PROTO = {
-    packConfig(cfg) {
-        const meta = new TextEncoder().encode(JSON.stringify(cfg));
-        const sig = signData(meta);
-        const buf = new ArrayBuffer(5 + meta.length + 64);
-        const u8 = new Uint8Array(buf);
-        u8[0] = 0x01;
-        new DataView(buf).setUint32(1, meta.length, true);
-        u8.set(meta, 5);
-        u8.set(sig, 5 + meta.length);
-        return buf;
-    },
+    // 0x01 decoder config, 0x03 stream info — both signed over their metadata.
+    packConfig(cfg) { return packSigned(0x01, cfg); },
+    packInfo(info) { return packSigned(0x03, info); },
     packChunk(meta, data) {
         const metaBytes = new TextEncoder().encode(JSON.stringify(meta));
         const dataBytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
@@ -140,6 +145,12 @@ const L = {
     connectWaiters: new Map(),
     rejoinTimer: null,
     rejoinAttempts: 0,
+    info: null,              // { title, username, startedAt, viewers }
+    infoPacket: null,        // last signed info packet (sent to new children)
+    title: '',
+    startedAt: 0,
+    lastInfoAt: 0,
+    tick: null,
 };
 
 function log(...a) { $('live-log').textContent = a.join(' '); console.log('[live]', ...a); }
@@ -252,16 +263,20 @@ async function acceptOffer(from, sid, sdp) {
         const ch = e.channel;
         ch.binaryType = 'arraybuffer';
         ch.onopen = () => {
-            L.children.set(from, { pc, channel: ch, capacity: 0, current: 0 });
+            L.children.set(from, { pc, channel: ch, capacity: 0, current: 0, subtree: 1 });
             updateStats();
             log('downstream', from.slice(0, 14) + '…');
             if (L.cachedConfig) try { ch.send(L.cachedConfig); } catch { /* ignore */ }
+            if (L.infoPacket) try { ch.send(L.infoPacket); } catch { /* ignore */ }
             requestKeyframeUpstream();
             if (L.mode === 'viewer') {
-                try { ch.send(PROTO.packControl('relay-capacity', { capacity: L.relayEnabled ? MAX_CHILDREN : 0, npub: L.npub })); } catch { /* ignore */ }
+                try { ch.send(PROTO.packControl('relay-capacity', { capacity: L.relayEnabled ? MAX_CHILDREN : 0, subtree: subtreeSize(), npub: L.npub })); } catch { /* ignore */ }
+                notifyUpstreamCapacity();
+            } else {
+                sendInfo(true);
             }
         };
-        ch.onclose = () => { L.children.delete(from); updateStats(); notifyUpstreamCapacity(); };
+        ch.onclose = () => { L.children.delete(from); updateStats(); notifyUpstreamCapacity(); sendInfo(true); };
         ch.onmessage = (ev) => handleChildMessage(from, ev.data);
     };
     pc.onconnectionstatechange = () => {
@@ -279,20 +294,35 @@ function handleChildMessage(from, data) {
     if (u8[0] !== 0x10) return;
     let ctl;
     try { ctl = PROTO.unpackControl(data); } catch { return; }
+    const child = L.children.get(from);
     if (ctl.cmd === 'relay-capacity') {
         L.relays.set(from, { capacity: ctl.payload.capacity || 0, current: 0 });
+        if (child) child.subtree = ctl.payload.subtree || 1;
+        onSubtreeChange();
     } else if (ctl.cmd === 'relay-update') {
         const info = L.relays.get(from) || { capacity: 0, current: 0 };
         info.current = ctl.payload.current || 0;
         L.relays.set(from, info);
+        if (child) child.subtree = ctl.payload.subtree || 1;
+        onSubtreeChange();
     } else if (ctl.cmd === 'request-keyframe') {
         requestKeyframeUpstream();
     } else if (ctl.cmd === 'request-config') {
-        const child = L.children.get(from);
         if (L.cachedConfig && child?.channel?.readyState === 'open') {
             try { child.channel.send(L.cachedConfig); } catch { /* ignore */ }
         }
+    } else if (ctl.cmd === 'request-info') {
+        if (L.infoPacket && child?.channel?.readyState === 'open') {
+            try { child.channel.send(L.infoPacket); } catch { /* ignore */ }
+        }
     }
+}
+
+// A child's subtree size changed: propagate it toward the streamer.
+function onSubtreeChange() {
+    if (L.mode === 'viewer') notifyUpstreamCapacity();
+    else if (L.mode === 'streamer') sendInfo(true);
+    updateStreamInfoUI();
 }
 
 function requestKeyframeUpstream() {
@@ -306,13 +336,56 @@ function sendControlUpstream(cmd, payload) {
 }
 function notifyUpstreamCapacity() {
     if (L.mode !== 'viewer') return;
-    sendControlUpstream('relay-update', { current: L.children.size, capacity: L.relayEnabled ? MAX_CHILDREN : 0, npub: L.npub });
+    sendControlUpstream('relay-update', { current: L.children.size, capacity: L.relayEnabled ? MAX_CHILDREN : 0, subtree: subtreeSize(), npub: L.npub });
 }
 function forwardToChildren(buf) {
     for (const [, c] of L.children) {
         if (c.channel?.readyState !== 'open') continue;
         try { c.channel.send(buf); } catch { /* ignore */ }
     }
+}
+
+// ---- stream metadata: title, streamer name, watchers, uptime ----
+function childSubtree(c) { return c.subtree || 1; }
+function subtreeSize() { let n = 1; for (const [, c] of L.children) n += childSubtree(c); return n; }
+function totalWatchers() { let n = 0; for (const [, c] of L.children) n += childSubtree(c); return n; }
+function fmtDuration(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    const p = (x) => String(x).padStart(2, '0');
+    return h ? `${h}:${p(m)}:${p(sec)}` : `${p(m)}:${p(sec)}`;
+}
+function updateStreamInfoUI() {
+    const info = L.info || {};
+    const active = L.mode === 'streamer' || (L.mode === 'viewer' && (L.frames > 0 || L.upstream));
+    $('si-title').textContent = active ? (info.title || L.title || 'Live') : 'No stream';
+    $('si-user').textContent = active
+        ? (info.username ? '@' + info.username : (L.streamerNpub ? '@' + L.streamerNpub.slice(0, 10) + '…' : ''))
+        : '';
+    const viewers = L.mode === 'streamer' ? totalWatchers() : (info.viewers || 0);
+    $('si-watchers').textContent = viewers + ' watching';
+    const started = info.startedAt || L.startedAt || 0;
+    $('si-uptime').textContent = active && started ? fmtDuration(Date.now() - started) : '';
+}
+function startTick() {
+    if (L.tick) return;
+    let n = 0;
+    L.tick = setInterval(() => {
+        updateStreamInfoUI();
+        n++;
+        if (L.mode === 'streamer' && n % 3 === 0) sendInfo();
+    }, 1000);
+}
+// Streamer: (re)build the signed info packet and push it to the tree.
+function sendInfo(force = false) {
+    if (L.mode !== 'streamer') return;
+    const now = Date.now();
+    if (!force && now - L.lastInfoAt < 1000) return;
+    L.lastInfoAt = now;
+    L.info = { title: L.title, username, startedAt: L.info?.startedAt || L.startedAt || now, viewers: totalWatchers() };
+    L.infoPacket = PROTO.packInfo(L.info);
+    forwardToChildren(L.infoPacket);
+    updateStreamInfoUI();
 }
 function iceComplete(pc, maxMs = 6000) {
     return new Promise((resolve) => {
@@ -355,6 +428,12 @@ async function goLive() {
     L.mode = 'streamer';
     L.streamerNpub = L.npub;
     L.streamerPub = hexToBytes(getPublicKey(hexToBytes(skHex)));
+    L.title = ($('stream-title').value || '').trim() || 'Live';
+    L.startedAt = Date.now();
+    L.info = { title: L.title, username, startedAt: L.startedAt, viewers: 0 };
+    L.infoPacket = PROTO.packInfo(L.info);
+    startTick();
+    updateStreamInfoUI();
     setStatus('live');
     $('go-live').disabled = true;
     $('stop-live').disabled = false;
@@ -416,11 +495,16 @@ function stopLive() {
     L.cachedConfig = null;
     L.mode = 'idle';
     L.streamerNpub = null;
+    L.info = null;
+    L.infoPacket = null;
+    L.title = '';
+    L.startedAt = 0;
     $('go-live').disabled = false;
     $('stop-live').disabled = true;
     $('share-row').hidden = true;
     setStatus('idle');
     updateStats();
+    updateStreamInfoUI();
 }
 
 function showShareLink() {
@@ -487,9 +571,10 @@ async function connectUpstream(target, role) {
         stageHint.textContent = role === 'streamer' ? 'Direct from streamer' : 'Relayed';
         updateStats();
         if (L.relayEnabled) {
-            try { ch.send(PROTO.packControl('relay-capacity', { capacity: MAX_CHILDREN, npub: L.npub })); } catch { /* ignore */ }
+            try { ch.send(PROTO.packControl('relay-capacity', { capacity: MAX_CHILDREN, subtree: subtreeSize(), npub: L.npub })); } catch { /* ignore */ }
         }
         try { ch.send(PROTO.packControl('request-config', {})); } catch { /* ignore */ }
+        try { ch.send(PROTO.packControl('request-info', {})); } catch { /* ignore */ }
     };
     ch.onmessage = (ev) => onUpstreamData(ev.data);
     ch.onclose = () => upstreamClosed();
@@ -539,6 +624,10 @@ function onUpstreamData(data) {
     if (packet.type === 0x01) {
         L.cachedConfig = data;
         configureDecoder(packet.meta);
+    } else if (packet.type === 0x03) {
+        L.info = packet.meta;
+        L.infoPacket = data;
+        updateStreamInfoUI();
     } else if (packet.type === 0x02) {
         if (packet.meta.type === 'key') L.hasKeyframe = true;
         if (L.hasKeyframe && L.decoder) {
@@ -604,12 +693,15 @@ function leaveWatch() {
     stageHint.textContent = 'Nothing playing yet';
     L.mode = 'idle';
     L.streamerNpub = null;
+    L.info = null;
+    L.infoPacket = null;
     L.frames = 0;
     setStatus('idle');
     $('watch-btn').disabled = false;
     $('leave-btn').disabled = true;
     setSig(null);
     $('st-sig').textContent = '—';
+    updateStreamInfoUI();
     updateStats();
 }
 
@@ -631,5 +723,7 @@ $('copy-link').addEventListener('click', async () => {
 // Auto-join if the link carries a streamer npub.
 const invited = (location.hash.match(/npub1[02-9ac-hj-np-z]{20,}/i) || [])[0];
 if (invited) { $('watch-input').value = invited; watch(invited); }
+startTick();
 updateStats();
+updateStreamInfoUI();
 window.__live = L;

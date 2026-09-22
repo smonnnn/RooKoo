@@ -19,9 +19,26 @@
 #live-main .card h3 { margin: 0 0 6px; }
 #live-main .card p { margin: 0 0 10px; }
 #live-main .row-btns { display: flex; gap: 6px; flex-wrap: wrap; }
-#live-main .row { display: flex; gap: 6px; }
-#live-main .row input { flex: 1; padding: 10px 12px; background: var(--color-background); border: 1px solid var(--line); }
+#live-main input[type="text"] {
+    width: 100%; padding: 10px 12px; margin-bottom: 8px;
+    background: var(--color-background); border: 1px solid var(--line);
+}
+#live-main .row { display: flex; gap: 6px; flex-wrap: wrap; }
+#live-main .row input { flex: 1 1 160px; min-width: 0; margin-bottom: 0; }
 #live-main .check { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: .85rem; color: var(--muted); }
+
+/* Now-playing bar over the video. */
+#stream-info {
+    position: absolute; top: 8px; left: 8px; right: 8px;
+    display: flex; flex-direction: column; gap: 2px;
+    background: rgba(5, 7, 10, .62);
+    border: 1px solid var(--line);
+    padding: 6px 10px;
+    pointer-events: none;
+}
+#si-title { color: #fff; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#si-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: .8rem; color: #cfd6df; }
+#si-user { color: var(--color-button); }
 
 #local-video {
     width: 100%; aspect-ratio: 16/9; margin-top: 10px;

@@ -29,6 +29,7 @@
             <section class="card">
                 <h3>Broadcast</h3>
                 <p class="muted small">Encode your camera with WebCodecs and stream it to the network. Every chunk is signed with your key; each viewer verifies it and can forward it on — a tree, so each node only sends a few copies.</p>
+                <input id="stream-title" type="text" placeholder="Stream title" maxlength="80">
                 <div class="row-btns">
                     <button id="go-live" class="btn primary">Go live</button>
                     <button id="stop-live" class="btn danger" disabled>Stop</button>
@@ -53,6 +54,14 @@
             </section>
 
             <section class="stage">
+                <div id="stream-info">
+                    <div id="si-title">No stream</div>
+                    <div id="si-meta">
+                        <span id="si-user"></span>
+                        <span id="si-watchers">0 watching</span>
+                        <span id="si-uptime"></span>
+                    </div>
+                </div>
                 <canvas id="remote-canvas" hidden></canvas>
                 <div id="stage-hint" class="stage-hint">Nothing playing yet</div>
             </section>
