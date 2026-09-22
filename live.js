@@ -217,6 +217,7 @@ async function handleSignal(from, msg) {
         case 'live_approve': return resolveAdmission(from, msg, 'approve');
         case 'live_redirect': return resolveAdmission(from, msg, 'redirect');
         case 'live_reject': return resolveAdmission(from, msg, 'reject');
+        case 'live_end': return endStream();
     }
 }
 
@@ -608,6 +609,9 @@ function stopLive() {
     $('screen-live').textContent = 'Share screen';
     $('screen-live').classList.remove('off');
     $('screen-live').disabled = true;
+    // Tell viewers the stream is over so they clear the picture (and relay it
+    // on to their own downstreams) instead of showing a frozen frame.
+    for (const [npub] of L.children) { try { p2p.send(npub, { type: 'live_end' }); } catch { /* ignore */ } }
     for (const [, c] of L.children) { try { c.pc.close(); } catch { /* ignore */ } }
     L.children.clear();
     L.relays.clear();
@@ -713,10 +717,48 @@ function upstreamClosed() {
     if (L.mode !== 'viewer') return;
     if (L.upstream) { try { L.upstream.pc.close(); } catch { /* ignore */ } L.upstream = null; }
     resetDecoder();
-    stageHint.textContent = 'Reconnecting…';
+    clearVideo('Reconnecting…');
     setStatus('reconnecting…');
     updateStats();
     if (L.streamerNpub) scheduleRejoin(L.streamerNpub);
+}
+
+// Clear the picture and disable the controls (used when the stream ends or
+// while reconnecting, so a stale frame never lingers).
+function clearVideo(hint) {
+    remoteCanvas.hidden = true;
+    ctx.clearRect(0, 0, remoteCanvas.width, remoteCanvas.height);
+    stageHint.style.display = '';
+    stageHint.textContent = hint || 'Nothing playing yet';
+    L.paused = false;
+    setControlsEnabled(false);
+    setLiveBadge(false);
+    vcPlay.textContent = '⏸';
+    vcPlay.title = 'Pause (keeps relaying)';
+    if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+}
+
+// The streamer stopped (explicit end message): clear and don't keep retrying.
+function endStream() {
+    clearTimeout(L.rejoinTimer);
+    if (L.upstream) { try { L.upstream.pc.close(); } catch { /* ignore */ } L.upstream = null; }
+    for (const [npub] of L.children) { try { p2p.send(npub, { type: 'live_end' }); } catch { /* ignore */ } }
+    for (const [, c] of L.children) { try { c.pc.close(); } catch { /* ignore */ } }
+    L.children.clear();
+    L.relays.clear();
+    resetDecoder();
+    clearVideo('Stream ended');
+    L.mode = 'idle';
+    L.frames = 0;
+    L.info = null;
+    L.infoPacket = null;
+    setStatus('ended');
+    $('watch-btn').disabled = false;
+    $('leave-btn').disabled = true;
+    setSig(null);
+    $('st-sig').textContent = '—';
+    updateStats();
+    updateStreamInfoUI();
 }
 
 function onUpstreamData(data) {
@@ -842,10 +884,7 @@ function leaveWatch() {
     L.children.clear();
     L.relays.clear();
     resetDecoder();
-    remoteCanvas.hidden = true;
-    ctx.clearRect(0, 0, remoteCanvas.width, remoteCanvas.height);
-    stageHint.style.display = '';
-    stageHint.textContent = 'Nothing playing yet';
+    clearVideo('Nothing playing yet');
     L.mode = 'idle';
     L.streamerNpub = null;
     L.info = null;
@@ -856,11 +895,6 @@ function leaveWatch() {
     $('leave-btn').disabled = true;
     setSig(null);
     $('st-sig').textContent = '—';
-    L.paused = false;
-    vcPlay.textContent = '⏸';
-    vcPlay.title = 'Pause (keeps relaying)';
-    setControlsEnabled(false);
-    setLiveBadge(false);
     updateStreamInfoUI();
     updateStats();
 }
