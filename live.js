@@ -123,6 +123,7 @@ const PROTO = {
 const $ = (id) => document.getElementById(id);
 const localVideo = $('local-video');
 const remoteCanvas = $('remote-canvas');
+const stageVideo = $('stage-video');
 const stageHint = $('stage-hint');
 const ctx = remoteCanvas.getContext('2d');
 
@@ -486,6 +487,10 @@ async function goLive() {
     listCameras();
     localVideo.srcObject = localStream;
     localVideo.hidden = false;
+    // Show our own camera in the main stage so the broadcaster can see it too.
+    stageVideo.srcObject = localStream;
+    stageVideo.hidden = false;
+    stageHint.style.display = 'none';
     const cfg = await pickCodec();
     if (!cfg) { log('no VP9/VP8 encoder support'); return; }
 
@@ -573,6 +578,7 @@ async function shareScreen() {
     const track = localScreen.getVideoTracks()[0];
     track.onended = () => stopScreenShare();
     localVideo.srcObject = localScreen;
+    stageVideo.srcObject = localScreen;
     try { await encoder.configure({ ...encodeCfg, width: 1280, height: 720 }); } catch { /* keep current */ }
     startReader(track);
     L.forceKeyframe = true;
@@ -590,6 +596,7 @@ async function stopScreenShare() {
     }
     if (L.mode === 'streamer' && encoder && localStream) {
         localVideo.srcObject = localStream;
+        stageVideo.srcObject = localStream;
         try { await encoder.configure(encodeCfg); } catch { /* ignore */ }
         startReader(localStream.getVideoTracks()[0]);
         L.forceKeyframe = true;
@@ -606,6 +613,10 @@ function stopLive() {
     if (localStream) { localStream.getTracks().forEach((t) => t.stop()); localStream = null; }
     localVideo.srcObject = null;
     localVideo.hidden = true;
+    stageVideo.srcObject = null;
+    stageVideo.hidden = true;
+    stageHint.style.display = '';
+    stageHint.textContent = 'Nothing playing yet';
     $('screen-live').textContent = 'Share screen';
     $('screen-live').classList.remove('off');
     $('screen-live').disabled = true;

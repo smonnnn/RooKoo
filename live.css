@@ -23,7 +23,7 @@
     place-items: center;
     overflow: hidden;
 }
-.stage canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+.stage canvas, .stage #stage-video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
 .stage-hint { position: absolute; color: #8b97a8; font-size: .9rem; }
 
 #stream-info {
@@ -114,8 +114,8 @@
         padding: 8px;
         gap: 8px;
     }
-    #live-video-col { flex: none; }
-    .stage { aspect-ratio: 16/9; flex: none; }
+    #live-video-col { display: block; flex: none; }
+    .stage { width: 100%; aspect-ratio: 16/9; flex: none; }
     #live-side { width: auto; overflow: visible; overscroll-behavior: auto; }
     #topbar .brand-name { display: none; }
     #video-controls { bottom: 6px; gap: 4px; padding: 3px 5px; }
