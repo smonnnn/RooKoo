@@ -25,59 +25,74 @@
             <a class="btn ghost" href="../">← Rooms</a>
         </header>
 
+        <div id="privacy-notice" class="notice" hidden>
+            <span>RooKoo connects you <strong>directly</strong> to other people (peer-to-peer). Anyone you connect with can see your approximate location, because a direct connection reveals your IP address. Use a VPN or Tor if you want to hide it.</span>
+            <button class="notice-close" id="privacy-close" title="Dismiss">×</button>
+        </div>
+
         <main id="live-main">
-            <section class="card">
-                <h3>Broadcast</h3>
-                <p class="muted small">Encode your camera with WebCodecs and stream it to the network. Every chunk is signed with your key; each viewer verifies it and can forward it on — a tree, so each node only sends a few copies.</p>
-                <input id="stream-title" type="text" placeholder="Stream title" maxlength="80">
-                <div class="row-btns">
-                    <button id="go-live" class="btn primary">Go live</button>
-                    <button id="stop-live" class="btn danger" disabled>Stop</button>
-                </div>
-                <video id="local-video" autoplay muted playsinline hidden></video>
-                <div id="share-row" class="share-row" hidden>
-                    <span class="muted small">Your live link:</span>
-                    <code id="share-link"></code>
-                    <button id="copy-link" class="btn">Copy</button>
-                </div>
-            </section>
-
-            <section class="card">
-                <h3>Watch</h3>
-                <p class="muted small">Open someone's live link, or paste the streamer's ID. You'll be placed in their tree automatically and can help relay to others.</p>
-                <div class="row">
-                    <input id="watch-input" type="text" placeholder="Live link or streamer ID…" spellcheck="false">
-                    <button id="watch-btn" class="btn primary">Watch</button>
-                    <button id="leave-btn" class="btn" disabled>Leave</button>
-                </div>
-                <label class="check"><input type="checkbox" id="relay-check" checked> Help relay to other viewers</label>
-            </section>
-
-            <section class="stage">
-                <div id="stream-info">
-                    <div id="si-title">No stream</div>
-                    <div id="si-meta">
-                        <span id="si-user"></span>
-                        <span id="si-watchers">0 watching</span>
-                        <span id="si-uptime"></span>
+            <div id="live-video-col">
+                <section class="stage" id="live-stage">
+                    <div id="stream-info">
+                        <div id="si-title">No stream</div>
+                        <div id="si-meta">
+                            <span id="si-user"></span>
+                            <span id="si-watchers">0 watching</span>
+                            <span id="si-uptime"></span>
+                        </div>
                     </div>
-                </div>
-                <canvas id="remote-canvas" hidden></canvas>
-                <div id="stage-hint" class="stage-hint">Nothing playing yet</div>
-            </section>
+                    <canvas id="remote-canvas" hidden></canvas>
+                    <div id="stage-hint" class="stage-hint">Nothing playing yet</div>
+                    <div id="video-controls">
+                        <button id="vc-play" class="btn round" title="Pause (keeps relaying)" disabled>⏸</button>
+                        <button id="vc-fs" class="btn round" title="Fullscreen" disabled>⛶</button>
+                        <button id="vc-pip" class="btn round" title="Picture in picture" hidden>🖼</button>
+                        <span id="vc-live" class="badge-live off">OFFLINE</span>
+                    </div>
+                </section>
+            </div>
 
-            <section class="card">
-                <h3>Status</h3>
-                <div class="stats">
-                    <div class="stat">role <b id="st-role">—</b></div>
-                    <div class="stat">source <b id="st-source">—</b></div>
-                    <div class="stat">upstream <b id="st-upstream">—</b></div>
-                    <div class="stat">downstream <b id="st-down">0</b></div>
-                    <div class="stat">signature <b id="st-sig">—</b></div>
-                    <div class="stat">frames <b id="st-frames">0</b></div>
-                </div>
-                <p class="muted small" id="live-log"></p>
-            </section>
+            <aside id="live-side">
+                <section class="card">
+                    <h3>Broadcast</h3>
+                    <p class="muted small">Encode your camera with WebCodecs and stream it to the network. Every chunk is signed with your key; each viewer verifies it and can forward it on — a tree, so each node only sends a few copies.</p>
+                    <input id="stream-title" type="text" placeholder="Stream title" maxlength="80">
+                    <div class="row-btns">
+                        <button id="go-live" class="btn primary">Go live</button>
+                        <button id="stop-live" class="btn danger" disabled>Stop</button>
+                    </div>
+                    <video id="local-video" autoplay muted playsinline hidden></video>
+                    <div id="share-row" class="share-row" hidden>
+                        <span class="muted small">Your live link:</span>
+                        <code id="share-link"></code>
+                        <button id="copy-link" class="btn">Copy</button>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <h3>Watch</h3>
+                    <p class="muted small">Open someone's live link, or paste the streamer's ID. You'll be placed in their tree automatically and can help relay to others.</p>
+                    <div class="row">
+                        <input id="watch-input" type="text" placeholder="Live link or streamer ID…" spellcheck="false">
+                        <button id="watch-btn" class="btn primary">Watch</button>
+                        <button id="leave-btn" class="btn" disabled>Leave</button>
+                    </div>
+                    <label class="check"><input type="checkbox" id="relay-check" checked> Help relay to other viewers</label>
+                </section>
+
+                <section class="card">
+                    <h3>Status</h3>
+                    <div class="stats">
+                        <div class="stat">role <b id="st-role">—</b></div>
+                        <div class="stat">source <b id="st-source">—</b></div>
+                        <div class="stat">upstream <b id="st-upstream">—</b></div>
+                        <div class="stat">downstream <b id="st-down">0</b></div>
+                        <div class="stat">signature <b id="st-sig">—</b></div>
+                        <div class="stat">frames <b id="st-frames">0</b></div>
+                    </div>
+                    <p class="muted small" id="live-log"></p>
+                </section>
+            </aside>
         </main>
     </div>
 </body>

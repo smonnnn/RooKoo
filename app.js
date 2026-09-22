@@ -596,7 +596,8 @@ function ensureTile(npub) {
         `<div class="avatar" data-avatar="${escapeHtml(npub)}"><img alt=""><span class="initials">${escapeHtml(initials(npub))}</span></div>` +
         `<video autoplay playsinline></video>` +
         `<div class="label"><span class="name"></span></div>` +
-        `<div class="badges"></div>`;
+        `<div class="badges"></div>` +
+        `<button class="tile-fs" title="Fullscreen">⛶</button>`;
     const vid = el.querySelector('video');
     if (isSelf) vid.muted = true;
     document.getElementById('video-grid').appendChild(el);
@@ -1487,6 +1488,23 @@ function checkMultiTab() {
 
 // ------------------------------------------------------------------ UI -----
 function buildUI() {
+    // Privacy notice: shown once, dismissible.
+    const notice = document.getElementById('privacy-notice');
+    if (localStorage.getItem('rookoo_privacy_ok') !== '1') notice.hidden = false;
+    document.getElementById('privacy-close').addEventListener('click', () => {
+        notice.hidden = true;
+        localStorage.setItem('rookoo_privacy_ok', '1');
+    });
+
+    // Fullscreen per video tile.
+    document.getElementById('video-grid').addEventListener('click', (e) => {
+        const btn = e.target.closest('.tile-fs');
+        if (!btn) return;
+        const tile = btn.closest('.tile');
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        else tile?.requestFullscreen?.().catch(() => {});
+    });
+
     document.getElementById('join-btn').addEventListener('click', () => joinMeeting().catch(e => toast('Could not join: ' + e.message)));
     document.getElementById('leave-btn').addEventListener('click', leaveMeeting);
     document.getElementById('mic-btn').addEventListener('click', () => setMic(!media.micOn));

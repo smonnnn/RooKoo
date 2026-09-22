@@ -151,6 +151,7 @@ const L = {
     startedAt: 0,
     lastInfoAt: 0,
     tick: null,
+    paused: false,
 };
 
 function log(...a) { $('live-log').textContent = a.join(' '); console.log('[live]', ...a); }
@@ -434,6 +435,7 @@ async function goLive() {
     L.infoPacket = PROTO.packInfo(L.info);
     startTick();
     updateStreamInfoUI();
+    setLiveBadge(true);
     setStatus('live');
     $('go-live').disabled = true;
     $('stop-live').disabled = false;
@@ -505,6 +507,8 @@ function stopLive() {
     setStatus('idle');
     updateStats();
     updateStreamInfoUI();
+    setLiveBadge(false);
+    setControlsEnabled(false);
 }
 
 function showShareLink() {
@@ -630,7 +634,10 @@ function onUpstreamData(data) {
         updateStreamInfoUI();
     } else if (packet.type === 0x02) {
         if (packet.meta.type === 'key') L.hasKeyframe = true;
-        if (L.hasKeyframe && L.decoder) {
+        // While paused we skip decoding (saving CPU) but keep relaying the raw
+        // signed packets, so downstream still gets the latest stream. The
+        // canvas keeps the last frame; resuming asks for a fresh keyframe.
+        if (!L.paused && L.hasKeyframe && L.decoder) {
             try {
                 L.decoder.decode(new EncodedVideoChunk({
                     type: packet.meta.type,
@@ -662,6 +669,8 @@ function configureDecoder(cfg) {
                 ctx.drawImage(frame, 0, 0);
                 frame.close();
                 L.frames++;
+                setControlsEnabled(true);
+                setLiveBadge(true);
                 if (L.frames % 15 === 0) updateStats();
             },
             error: (e) => console.warn('[live] decoder error', e),
@@ -701,11 +710,52 @@ function leaveWatch() {
     $('leave-btn').disabled = true;
     setSig(null);
     $('st-sig').textContent = '—';
+    L.paused = false;
+    vcPlay.textContent = '⏸';
+    vcPlay.title = 'Pause (keeps relaying)';
+    setControlsEnabled(false);
+    setLiveBadge(false);
     updateStreamInfoUI();
     updateStats();
 }
 
 // -------------------------------------------------------------------- UI ----
+const notice = $('privacy-notice');
+if (localStorage.getItem('rookoo_privacy_ok') !== '1') notice.hidden = false;
+$('privacy-close').addEventListener('click', () => {
+    notice.hidden = true;
+    localStorage.setItem('rookoo_privacy_ok', '1');
+});
+
+// Video controls. Pausing only freezes the picture; packets keep flowing to
+// downstream viewers. Resuming requests a fresh keyframe.
+const vcPlay = $('vc-play'), vcFs = $('vc-fs'), vcPip = $('vc-pip'), vcLive = $('vc-live');
+const pipSupported = 'pictureInPictureEnabled' in document && document.pictureInPictureEnabled;
+if (pipSupported) vcPip.hidden = false;
+function setControlsEnabled(on) {
+    vcPlay.disabled = !on;
+    vcFs.disabled = !on;
+    if (pipSupported) vcPip.disabled = !on;
+}
+function setLiveBadge(on) {
+    vcLive.textContent = on ? 'LIVE' : 'OFFLINE';
+    vcLive.classList.toggle('off', !on);
+}
+vcPlay.addEventListener('click', () => {
+    L.paused = !L.paused;
+    vcPlay.textContent = L.paused ? '▶' : '⏸';
+    vcPlay.title = L.paused ? 'Resume' : 'Pause (keeps relaying)';
+    if (!L.paused) { L.hasKeyframe = false; requestKeyframeUpstream(); }
+});
+vcFs.addEventListener('click', () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else $('live-stage').requestFullscreen?.().catch(() => {});
+});
+vcPip.addEventListener('click', () => {
+    if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+    else remoteCanvas.requestPictureInPicture?.().catch(() => {});
+});
+
 $('go-live').addEventListener('click', goLive);
 $('stop-live').addEventListener('click', stopLive);
 $('watch-btn').addEventListener('click', () => {

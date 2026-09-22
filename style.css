@@ -34,6 +34,33 @@
 /* Author `display` rules below must not defeat the `hidden` attribute. */
 [hidden] { display: none !important; }
 
+/* Shared privacy / info notice bar. */
+.notice {
+    display: flex; align-items: flex-start; gap: 8px;
+    background: var(--color-button-h);
+    border-bottom: 1px solid var(--line);
+    padding: 8px 12px;
+    font-size: .82rem;
+    color: var(--text);
+    flex: none;
+}
+.notice span { flex: 1; }
+.notice a { color: var(--color-link); }
+.notice-close {
+    background: transparent; border: none; cursor: pointer;
+    font-size: 1.2rem; line-height: 1; color: var(--muted);
+    padding: 0 4px;
+}
+
+/* Fullscreen button on room video tiles. */
+.tile-fs {
+    position: absolute; right: 6px; bottom: 6px;
+    width: 30px; height: 30px; padding: 0;
+    display: none; place-items: center;
+    background: rgba(5, 7, 10, .62); border: 1px solid var(--line); color: #fff;
+}
+.tile:hover .tile-fs, .tile:focus-within .tile-fs { display: grid; }
+
 /* Kept in the layout (not display:none) so label-tap opens the picker reliably
    on mobile browsers. */
 .visually-hidden {
